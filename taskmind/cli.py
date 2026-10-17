@@ -1052,6 +1052,26 @@ def _new_project(name):
     return str(folder)
 
 
+def _offer_new_folder(root, text, yes):
+    """Outside a project (e.g. the home folder), build in a new folder rather than sweeping
+    everything here into git. Returns the folder to create."""
+    from taskmind.builder import project_name
+    name, n = project_name(text), 2
+    while (Path(root) / name).exists():
+        name, n = f"{project_name(text)}-{n}", n + 1
+    hint = ("To work on the files in this folder instead, make it a project first: "
+            "git init && git add -A && git commit -m \"start\"")
+    if yes:
+        return str(Path(root) / name)
+    if not interactive():
+        raise CLIError(f"{root} isn't a project folder. Build in a new folder with "
+                       f"`tm build --new {name} \"...\"`. {hint}")
+    ui.out(f"{ui.escape(root)} isn't a project folder, so I'll make a new folder for this.")
+    ui.out(f"[dim]{ui.escape(hint)}[/dim]")
+    chosen = ui.ask(f"Folder name (Enter for [bold]{name}[/bold], or type another):").strip()
+    return str(Path(root) / (chosen or name))
+
+
 def _show_build_event(kind, name=None, args=None, result=None, command=None, code=None, output=None):
     args = args or {}
     if kind == "tool":
@@ -1093,6 +1113,8 @@ def cmd_build(args):
     cfg = ensure_setup()
     db = open_db()
     text, title, root, task = _build_goal(db, args)
+    if not args.new and not builder.is_project(root) and any(Path(root).iterdir()):
+        args.new = _offer_new_folder(root, text, args.yes)
     if args.new:
         root = _new_project(args.new)
     try:

@@ -140,17 +140,20 @@ Keep it (add it to your main branch)? [Y/n]
 
 **How it works**
 
-1. **A safe branch.** TaskMind creates `tm/<task-name>` and works there. If the project
+1. **A project folder.** Run it inside your project. Outside one (for example your home
+   folder), TaskMind makes a new folder for the work (it asks for the name) instead of touching
+   what's there. An empty folder becomes the project.
+2. **A safe branch.** TaskMind creates `tm/<task-name>` and works there. If the project
    has changes you haven't committed, it stops and asks you to commit them first, so its
    work never mixes with yours.
-2. **The AI works with tools:** it lists, searches and reads files, writes and edits
+3. **The AI works with tools:** it lists, searches and reads files, writes and edits
    them, and runs commands (tests, scripts) in the project folder. You see every action.
-3. **The check.** When the AI says it's finished, TaskMind runs the test command itself.
+4. **The check.** When the AI says it's finished, TaskMind runs the test command itself.
    Which command? Yours if you gave `--check`, otherwise the project's own (`npm test`,
    `pytest`/`unittest`, `go test`, `cargo test`), otherwise the one the AI wrote tests for.
    The AI can't swap in an easier check than yours or the project's.
-4. **Fix rounds.** If the check fails, the errors go back to the AI (up to 3 rounds).
-5. **Saved and kept.** The work is committed on the branch (secret files like `.env` are
+5. **Fix rounds.** If the check fails, the errors go back to the AI (up to 3 rounds).
+6. **Saved and kept.** The work is committed on the branch (secret files like `.env` are
    never committed). Enter merges it into your branch and removes the work branch. Say no
    and you can throw it away, or leave it on its branch to look at
    (`git diff main...tm/<name>`).
@@ -948,7 +951,7 @@ Environment variables: `GROQ_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`,
 ## Development
 
 ```sh
-python3 -m unittest discover -s tests     # 248 unit tests, no AI calls, no dependencies
+python3 -m unittest discover -s tests     # 253 unit tests, no AI calls, no dependencies
 python3 tests/live_smoke.py               # every command end to end, with your real AI provider
 python3 tests/live_smoke.py --no-ai       # the same, skipping AI calls
 ```

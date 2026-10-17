@@ -518,11 +518,34 @@ def slug(text, limit=40) -> str:
     return words[:limit].rstrip("-") or "task"
 
 
+class NotAProject(GitError):
+    """The folder isn't a git project and has files in it (e.g. the home folder)."""
+
+
+def is_project(root) -> bool:
+    return git(root, "rev-parse", "--is-inside-work-tree", check=False) == "true"
+
+
+FILLER = {"please", "create", "make", "build", "write", "add", "a", "an", "the", "one", "me", "my", "i", "want",
+          "need", "to", "for", "of", "with", "and", "that", "can", "you", "some", "new", "simple", "mujhe", "ek",
+          "chahiye", "ke", "liye", "ka", "ki", "meri", "mera"}
+
+
+def project_name(task) -> str:
+    """A short folder name from the task: 'Please create a coffee cafe website...' -> 'coffee-cafe-website'."""
+    words = [w for w in re.findall(r"[a-z0-9]+", task.lower()) if w not in FILLER]
+    return slug(" ".join(words[:3]), 30) if words else "my-project"
+
+
 def start_branch(root, task, new_project=False) -> tuple:
     """Put the work on a fresh branch. Returns (the user's branch, the new branch).
-    A new project gets its own git history, even inside another project's folder."""
-    if new_project or git(root, "rev-parse", "--is-inside-work-tree", check=False) != "true":
+
+    Git starts only in a new project or an empty folder: never in a folder that already
+    holds other things (the home folder, Downloads), which would sweep them all in."""
+    if new_project or (not is_project(root) and not any(Path(root).iterdir())):
         git(root, "init", "-q")
+    elif not is_project(root):
+        raise NotAProject(f"{root} isn't a project folder.")
     if git(root, "status", "--porcelain"):
         raise GitError("This project has changes that aren't committed yet. Commit them first "
                        "(git add -A && git commit -m \"...\"), so TaskMind's work stays separate from yours.")

@@ -2536,3 +2536,56 @@ class TestBuildCLI(TestCLI):
         code, out = self.run_cli("build", "A calculator", "--new", "calcapp", "--yes", llm=llm)
         self.assertEqual(code, 0, out)
         self.assertTrue((self.root / "calcapp" / "calc.py").exists())
+
+
+class TestBuildOutsideAProject(TestCLI):
+    """Seen in real use: `tm build` in the home folder ran `git init` there."""
+
+    def setUp(self):
+        super().setUp()
+        self.cwd = os.getcwd()
+        self.home = Path(self.tmp.name) / "home"
+        self.home.mkdir()
+        (self.home / "photo.jpg").write_text("x", encoding="utf-8")  # a folder with the user's own things
+        os.chdir(self.home)
+
+    def tearDown(self):
+        os.chdir(self.cwd)
+        super().tearDown()
+
+    def website_llm(self):
+        return FakeLLM(tool_call("write_file", path="index.html", content="<h1>Cafe</h1>\n"),
+                       tool_call("finish", summary="Made it.", check_command=""))
+
+    def test_never_starts_git_in_a_folder_full_of_other_things(self):
+        from taskmind.builder import NotAProject, start_branch
+        with self.assertRaises(NotAProject):
+            start_branch(self.home, "x")
+        self.assertFalse((self.home / ".git").exists())
+
+    def test_scripts_are_told_to_use_a_new_folder(self):
+        code, out = self.run_cli("build", "Please create a coffee cafe website", llm=self.website_llm())
+        self.assertEqual(code, 1)
+        self.assertIn("--new coffee-cafe-website", out)
+        self.assertFalse((self.home / ".git").exists())
+
+    def test_builds_in_a_new_folder_instead(self):
+        code, out = self.run_cli("build", "Please create one static website of a coffee cafe", "--yes",
+                                 llm=self.website_llm())
+        self.assertFalse((self.home / ".git").exists())
+        self.assertTrue((self.home / "static-website-coffee" / "index.html").exists(), out)
+
+    def test_an_empty_folder_becomes_the_project(self):
+        empty = self.home / "empty"
+        empty.mkdir()
+        os.chdir(empty)
+        self.run_cli("build", "A cafe website", "--yes", llm=self.website_llm())
+        self.assertTrue((empty / ".git").exists())
+        self.assertTrue((empty / "index.html").exists())
+
+    def test_project_names(self):
+        from taskmind.builder import project_name
+        self.assertEqual(project_name("Please create one static website of coffice caffe"),
+                         "static-website-coffice")
+        self.assertEqual(project_name("Mujhe ek billing program chahiye"), "billing-program")
+        self.assertEqual(project_name("please make a"), "my-project")
