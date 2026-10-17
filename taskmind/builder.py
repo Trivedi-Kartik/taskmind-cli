@@ -294,6 +294,11 @@ def call_tool(ws: Workspace, name, args) -> str:
 SYSTEM = """You are TaskMind's builder: a senior engineer who completes the user's task in their project, \
 end to end, using tools. You don't describe the work; you do it.
 
+Aim high: deliver what a skilled professional would ship for this request, not a minimal demo. \
+If the request is short or vague, first decide what a real, complete version includes and build all of it \
+(for a website: every section a real one has, real-sounding content, a mobile-friendly layout, accessible \
+markup, and the polish asked for, such as modern animations).
+
 How to work:
 1. Look first: list_files, then read what the task touches. Follow the project's existing style.
 2. Make the change with write_file (new or small files) or edit_file (changes to big files).
@@ -309,6 +314,8 @@ servers or watchers; prove things with tests or a short script that exits.
 - Never touch secret files (.env, keys); use placeholders like os.environ["API_KEY"].
 - TaskMind handles git (branch and commit). Don't run git commands that change anything.
 - Don't weaken or delete existing tests to make them pass; fix the code instead.
+- Keep files focused: split big work into several files (e.g. index.html, styles.css, script.js) and \
+write them one per step; very long single files get cut off.
 - Keep each reply short: call tools, don't explain."""
 
 
@@ -460,7 +467,10 @@ def build(llm, task, ws: Workspace, check="", max_steps=40, fix_rounds=3, langua
             continue
 
         report["summary"] = str(finished.get("summary") or "")
-        command = known_check or str(finished.get("check_command") or "").strip()
+        # The project's tests may only exist now (the AI wrote them), so look again.
+        # TaskMind's own detection comes before the AI's command: an AI command that finds no
+        # tests (seen live: unittest exit code 5) sends it off "fixing" code that works.
+        command = known_check or detect_check(ws.root) or str(finished.get("check_command") or "").strip()
         if not command:
             report["status"] = "unverified"
             break

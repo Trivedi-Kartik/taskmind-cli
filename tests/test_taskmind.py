@@ -2422,6 +2422,31 @@ class TestBuildLoop(unittest.TestCase):
         self.assertEqual(report["status"], "passed")
         self.assertIn("it failed", llm.calls[1]["messages"][-1]["content"])
 
+    def test_tests_written_during_the_build_are_found_and_run(self):
+        # Seen live: the AI wrote tests but described the command in text, so nothing was run.
+        from taskmind.builder import build
+        test = "import unittest, calc\n\nclass T(unittest.TestCase):\n    def test_add(self):\n" \
+               "        self.assertEqual(calc.add(2, 3), 5)\n"
+        llm = FakeLLM(tool_call("edit_file", path="calc.py", old="a - b", new="a + b"),
+                      tool_call("write_file", path="test_calc.py", content=test),
+                      "Done.", "Done. **Test command:** python -m unittest")
+        with TempDir() as tmp:
+            report = build(llm, "Fix add", self.ws(tmp))
+        self.assertEqual(report["status"], "passed")
+        self.assertIn("unittest", report["check"])
+
+    def test_taskminds_own_test_detection_beats_a_wrong_ai_command(self):
+        # Seen live: the AI's command found no tests (exit 5), and it spent its steps "fixing" working code.
+        from taskmind.builder import build
+        test = "import unittest, calc\n\nclass T(unittest.TestCase):\n    def test_add(self):\n" \
+               "        self.assertEqual(calc.add(2, 3), 5)\n"
+        llm = FakeLLM(tool_call("edit_file", path="calc.py", old="a - b", new="a + b"),
+                      tool_call("write_file", path="tests/test_calc.py", content=test),
+                      tool_call("finish", summary="Done.", check_command=f"{PY} -m unittest discover -s nowhere"))
+        with TempDir() as tmp:
+            report = build(llm, "Fix add", self.ws(tmp))
+        self.assertEqual(report["status"], "passed", report["check_output"])
+
     def test_risky_check_is_not_run(self):
         from taskmind.builder import build
         llm = FakeLLM(tool_call("finish", summary="Done.", check_command="rm -rf build && pytest"))

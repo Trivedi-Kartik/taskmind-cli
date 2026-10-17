@@ -1086,8 +1086,8 @@ def _show_build_event(kind, name=None, args=None, result=None, command=None, cod
         if name == "run_command":
             first = result.split("\n", 1)[0]
             ok = first == "exit code 0"
-            ui.out(f"    [{'green' if ok else 'yellow'}]{ui.escape(first)}[/]" if first.startswith("exit code")
-                   else f"    [yellow]{ui.escape(first[:160])}[/yellow]")
+            color = "green" if ok else "yellow"
+            ui.out(f"    [{color}]{ui.escape(first if first.startswith('exit code') else first[:160])}[/{color}]")
         elif result.startswith("Tool error"):
             ui.out(f"    [yellow]{ui.escape(result[:160])}[/yellow]")
     elif kind == "check":
