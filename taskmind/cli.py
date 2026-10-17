@@ -992,7 +992,7 @@ def cmd_prompt(args):
     db = open_db()
     task, text = _build_prompt(db, args)
     if args.out:
-        Path(args.out).write_text(text)
+        Path(args.out).write_text(text, encoding="utf-8")
         ui.out(f"Wrote {args.out}")
     elif args.print or not copy_to_clipboard(text):
         ui.plain(text)

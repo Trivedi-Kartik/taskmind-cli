@@ -38,7 +38,8 @@ class Repo:
     def _git(self, *args, check=True) -> str:
         try:
             result = subprocess.run(
-                ["git", "-C", str(self.root), *args], capture_output=True, text=True, timeout=30
+                ["git", "-C", str(self.root), *args], capture_output=True, text=True, timeout=30,
+                encoding="utf-8", errors="replace",  # git speaks UTF-8; Windows' default code page doesn't
             )
         except FileNotFoundError as exc:
             if check:

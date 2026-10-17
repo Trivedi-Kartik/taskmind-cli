@@ -113,8 +113,8 @@ def practice_space():
     if config.config_path().exists():
         shutil.copy(config.config_path(), data / "config.json")
         (data / "config.json").chmod(0o600)
-    (project / "app.py").write_text(PRACTICE_APP)
-    (project / ".gitignore").write_text("notes.db\n")
+    (project / "app.py").write_text(PRACTICE_APP, encoding="utf-8")
+    (project / ".gitignore").write_text("notes.db\n", encoding="utf-8")
     git(project, "init", "-q")
     git(project, "add", ".")
     git(project, "commit", "-qm", "Notes app")

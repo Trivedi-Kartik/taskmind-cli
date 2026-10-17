@@ -82,7 +82,7 @@ def cmd_greet(args):
         env = f"env TASKMIND_HOME={shlex.quote(str(config.home()))} " if os.environ.get("TASKMIND_HOME") else ""
         AUTOSTART.write_text("[Desktop Entry]\nType=Application\nName=TaskMind greeting\n"
                              f"Exec=sh -c 'sleep 10; {env}{reminders.tm_executable()} greet --notify'\n"
-                             "X-GNOME-Autostart-enabled=true\nNoDisplay=true\n")
+                             "X-GNOME-Autostart-enabled=true\nNoDisplay=true\n", encoding="utf-8")
         ui.out(f"[green]Done.[/green] Each time you log in, TaskMind greets you with your day "
                f"([dim]{ui.escape(str(AUTOSTART))}; undo with tm greet --uninstall[/dim]).")
         return
@@ -194,7 +194,7 @@ def add_to_wishlist(request, reason):
 
 def cmd_wishlist(args):
     path = wishlist_path()
-    if not path.exists() or not path.read_text().strip():
+    if not path.exists() or not path.read_text(encoding="utf-8").strip():
         ui.out("Your wishlist is empty. When you ask `tm do` for something TaskMind can't do yet, "
                "it's saved here.")
         return

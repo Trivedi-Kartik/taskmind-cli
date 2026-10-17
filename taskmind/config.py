@@ -99,7 +99,7 @@ def load() -> dict:
     cfg = json.loads(json.dumps(DEFAULTS))
     path = config_path()
     if path.exists():
-        cfg.update(json.loads(path.read_text()))
+        cfg.update(json.loads(path.read_text(encoding="utf-8")))
     # Older configs kept one key and model for the active provider; keep them per provider.
     provider = cfg.get("provider") or "groq"
     if cfg.get("api_key"):
@@ -115,7 +115,7 @@ def save(cfg: dict) -> None:
     path = config_path()
     # Create with owner-only permissions so API keys are never readable by others, even briefly.
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as fh:
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
         fh.write(json.dumps(cfg, indent=2))
     path.chmod(0o600)  # also fixes files created by older versions
 

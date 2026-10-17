@@ -28,7 +28,14 @@ jobs:
       - name: Bundled guide matches README
         run: python scripts/build.py --check
       - name: Unit tests
-        run: python -m unittest discover -s tests -v
+        shell: bash
+        run: |
+          set +e
+          python -m unittest discover -s tests -v 2> test-output.txt
+          status=$?
+          cat test-output.txt
+          if [ $status -ne 0 ]; then python scripts/ci_report.py test-output.txt; fi
+          exit $status
       - name: Install like a user would, then smoke-test the installed command
         if: runner.os != 'Windows'
         run: |
