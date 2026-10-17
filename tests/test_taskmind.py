@@ -1291,6 +1291,9 @@ class TestSimpleModeCLI(TestCLI):
         self.assertIn("reminder set for", out)
         code, out = self.run_cli("remind")
         self.assertIn("Pay rent", out)
+        # "Due today" reminders wait for the daily reminder time; make that midnight so the
+        # test doesn't depend on what time of day (or which time zone) it runs in.
+        self.run_cli("config", "--remind-time", "00:00")
         with mock.patch.object(cli.reminders, "notify", return_value=True):
             code, out = self.run_cli("remind", "check")
         self.assertIn("Due today: Pay rent", out)
