@@ -80,7 +80,11 @@ class LLM:
             body["response_format"] = {"type": "json_object"}
         data = self._request("/chat/completions", body)
         try:
-            return data["choices"][0]["message"]
+            message = data["choices"][0]["message"]
+            # Why the reply ended: "length" means it ran out of room (thinking models can
+            # spend the whole allowance thinking and return nothing). Not sent back.
+            message["_finish"] = data["choices"][0].get("finish_reason")
+            return message
         except (KeyError, IndexError, TypeError) as exc:
             raise LLMError(f"Unexpected response from model: {str(data)[:300]}") from exc
 
@@ -119,10 +123,12 @@ class LLM:
                 if err.code == 403:
                     raise LLMError(f"Access denied by the provider (HTTP 403): {detail[:300]}") from err
                 if daily:
+                    limit = re.search(r"limit: (\d+)", detail)
+                    allowance = f" ({limit.group(1)} requests a day on the free tier)" if limit else ""
                     raise LLMError(
-                        f"Daily free-tier limit reached for {self.model}. Each model has its own daily "
-                        "allowance, so you can switch now, e.g. `tm config --model openai/gpt-oss-20b`, "
-                        "or wait for it to reset.\n" + _wait_hint(detail)
+                        f"Daily free-tier limit reached for {self.model}{allowance}. Each model has its "
+                        "own daily allowance: switch with `tm config --model <id>` (`tm models` lists them), "
+                        "turn on billing with the provider, or wait for it to reset. " + _wait_hint(detail)
                     ) from err
                 if err.code == 429:
                     raise LLMError(
@@ -141,12 +147,15 @@ class LLM:
 
 def _is_daily_limit(detail) -> bool:
     """Per-day caps (TPD/RPD) won't clear in seconds, so retrying only wastes time."""
-    return bool(re.search(r"\((TPD|RPD)\)|per day", detail))
+    return bool(re.search(r"\((TPD|RPD)\)|per day|PerDay", detail, re.I))
 
 
 def _wait_hint(detail) -> str:
-    match = re.search(r"try again in ([\dhms.]+)", detail)
-    return f"The provider says to try again in {match.group(1).rstrip('.')}." if match else ""
+    match = re.search(r"(?:try again|retry) in ((?:\d+h)?(?:\d+m)?[\d.]+s)", detail)
+    if not match:
+        return ""
+    wait = re.sub(r"(\.\d)\d+s$", r"\1s", match.group(1))  # Gemini: 10h37m44.235401254s
+    return f"The provider says to try again in {wait}."
 
 
 def _retry_delay(header, detail, attempt) -> float:

@@ -1104,6 +1104,7 @@ BUILD_RESULT = {
     "failed": "[bold red]❌ Not done: the tests still fail after several fixes.[/bold red]",
     "unverified": "[bold yellow]🟡 Built, but not proven: there's no test to run.[/bold yellow]",
     "unfinished": "[bold yellow]🟡 Not finished: the AI ran out of steps.[/bold yellow]",
+    "nothing": "[bold red]❌ Nothing was built: the AI stopped without writing anything.[/bold red]",
 }
 
 
@@ -1150,6 +1151,8 @@ def cmd_build(args):
     files = builder.save_work(ws.root, f"{title}\n\n{report['summary']}\n\nTM-{task['id']}".strip())
 
     ui.out("\n" + BUILD_RESULT[report["status"]])
+    if report.get("reason"):
+        ui.out(ui.escape(report["reason"]))
     if report["summary"]:
         ui.out(ui.escape(report["summary"]))  # not markdown: it would swallow <placeholders>
     if files:
@@ -1163,7 +1166,8 @@ def cmd_build(args):
                                 f"{len(files)} files; {report['steps']} steps")
     if not files:
         builder.discard(ws.root, base, branch)
-        ui.out("Nothing was changed, so there's nothing to keep.")
+        ui.out("Nothing was changed, so there's nothing to keep. Try again; if it happens again, run "
+               "`tm report-bug` so we can see why.")
         return 1
 
     passed = report["status"] == "passed"

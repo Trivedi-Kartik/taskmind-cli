@@ -166,6 +166,7 @@ Keep it (add it to your main branch)? [Y/n]
 | ❌ Not done | The tests still fail after the fix rounds; the last errors are shown. Keeping it is your choice (the default is no) |
 | 🟡 Built, but not proven | There was nothing to run (no tests). Look at it before keeping it |
 | 🟡 Not finished | The AI ran out of steps. The work so far is saved on its branch |
+| ❌ Nothing was built | The AI stopped without writing anything. Try again; if it repeats, `tm report-bug` |
 
 **Commands the AI may run**
 
@@ -193,6 +194,14 @@ API keys, tokens and passwords are removed from the environment the commands see
 
 The summary is written in your language: set it with `tm me --language hinglish`
 (or `hindi`, `english`).
+
+**Free tiers and daily limits.** Building takes many AI requests (often 20 to 40 for a
+website). Free tiers cap requests per day, per model, and the caps change: in October 2026
+one free Gemini model allowed only 20 a day, not enough for a single website. When a model's
+daily limit runs out, TaskMind says so (with the time until it resets) and continues on your
+next provider. For regular building, turn on billing with your provider (you pay per use) or
+pick a model with a larger free allowance; your provider's rate-limit page (for Gemini:
+https://ai.dev/rate-limit) shows each model's limits.
 
 **Which AI builds?** The same providers and backups as everything else; to use a
 specific one just for building: `tm config --stage build=gemini` (see
@@ -951,7 +960,7 @@ Environment variables: `GROQ_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`,
 ## Development
 
 ```sh
-python3 -m unittest discover -s tests     # 256 unit tests, no AI calls, no dependencies
+python3 -m unittest discover -s tests     # 261 unit tests, no AI calls, no dependencies
 python3 tests/live_smoke.py               # every command end to end, with your real AI provider
 python3 tests/live_smoke.py --no-ai       # the same, skipping AI calls
 ```

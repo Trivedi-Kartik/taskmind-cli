@@ -10,6 +10,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import urllib.error
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -2250,6 +2251,23 @@ def build_repo(root, with_tests=False):
     return root
 
 
+class TestGeminiLimits(unittest.TestCase):
+    def test_gemini_daily_limit_is_recognised_and_explained(self):
+        from taskmind.llm import LLM, LLMError
+        detail = json.dumps([{"error": {"code": 429, "message": "You exceeded your current quota.\n* Quota "
+                              "exceeded for metric: generate_content_free_tier_requests, limit: 20, model: "
+                              "gemini-3.8-flash\nPlease retry in 10h37m44.235401254s.", "details": [
+                              {"violations": [{"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"}]}]}}])
+        err = urllib.error.HTTPError("u", 429, "Too Many", {}, io.BytesIO(detail.encode()))
+        llm = LLM("https://x", "gemini-3.8-flash", "k", max_retries=3)
+        with mock.patch("urllib.request.urlopen", side_effect=err), mock.patch("time.sleep") as sleep:
+            with self.assertRaises(LLMError) as ctx:
+                llm.chat([{"role": "user", "content": "hi"}])
+        sleep.assert_not_called()  # a daily limit won't clear by waiting seconds: fail over now
+        self.assertIn("20 requests a day", str(ctx.exception))
+        self.assertIn("10h37m44.2s", str(ctx.exception))
+
+
 class TestBuildSafety(unittest.TestCase):
     def test_command_risk(self):
         from taskmind.builder import command_risk
@@ -2387,7 +2405,8 @@ class TestBuildLoop(unittest.TestCase):
 
     def test_no_check_is_unverified_and_chatter_is_nudged(self):
         from taskmind.builder import build
-        llm = FakeLLM("I will now edit the file.", tool_call("finish", summary="Done.", check_command=""))
+        llm = FakeLLM("I will now edit the file.", tool_call("write_file", path="notes.md", content="x\n"),
+                      tool_call("finish", summary="Done.", check_command=""))
         with TempDir() as tmp:
             report = build(llm, "Fix add", self.ws(tmp))
         self.assertEqual(report["status"], "unverified")
@@ -2463,7 +2482,8 @@ class TestBuildLoop(unittest.TestCase):
 
     def test_risky_check_is_not_run(self):
         from taskmind.builder import build
-        llm = FakeLLM(tool_call("finish", summary="Done.", check_command="rm -rf build && pytest"))
+        llm = FakeLLM(tool_call("write_file", path="notes.md", content="x\n"),
+                      tool_call("finish", summary="Done.", check_command="rm -rf build && pytest"))
         with TempDir() as tmp:
             report = build(llm, "Fix add", self.ws(tmp))
         self.assertEqual(report["status"], "unverified")
@@ -2483,10 +2503,37 @@ class TestBuildLoop(unittest.TestCase):
 
     def test_out_of_steps(self):
         from taskmind.builder import build
-        llm = FakeLLM(*[tool_call("list_files", path=f"d{i}") for i in range(5)])
+        llm = FakeLLM(tool_call("write_file", path="notes.md", content="x\n"),
+                      *[tool_call("list_files", path=f"d{i}") for i in range(4)])
         with TempDir() as tmp:
             report = build(llm, "Fix add", self.ws(tmp), max_steps=5)
         self.assertEqual(report["status"], "unfinished")
+
+    def test_stopping_without_writing_is_nothing_built(self):
+        # Seen live with Gemini: three looks around, then a stop. That's not "built".
+        from taskmind.builder import build
+        llm = FakeLLM(tool_call("list_files"), "Done.", "Done.")
+        with TempDir() as tmp:
+            report = build(llm, "Make a website", self.ws(tmp))
+        self.assertEqual(report["status"], "nothing")
+
+    def test_empty_reply_gets_more_room_instead_of_ending(self):
+        from taskmind.builder import build
+        empty = {"role": "assistant", "content": None, "tool_calls": [], "_finish": "length"}
+        llm = FakeLLM(empty, tool_call("edit_file", path="calc.py", old="a - b", new="a + b"),
+                      tool_call("finish", summary="Done.", check_command=PASS_CHECK))
+        with TempDir() as tmp:
+            report = build(llm, "Fix add", self.ws(tmp))
+        self.assertEqual(report["status"], "passed")
+        self.assertEqual(llm.calls[1]["kw"]["max_tokens"], 2 * llm.calls[0]["kw"]["max_tokens"])
+
+    def test_endless_empty_replies_say_why(self):
+        from taskmind.builder import build
+        empty = {"role": "assistant", "content": "", "tool_calls": []}
+        with TempDir() as tmp:
+            report = build(FakeLLM(*[empty] * 4), "Make a website", self.ws(tmp))
+        self.assertEqual(report["status"], "nothing")
+        self.assertIn("empty replies", report["reason"])
 
     def test_hinglish_for_non_programmers(self):
         from taskmind.builder import build

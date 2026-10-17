@@ -405,7 +405,8 @@ def build(llm, task, ws: Workspace, check="", max_steps=40, fix_rounds=3, langua
     """Do the task in the workspace. Returns a report:
 
     status: "passed" (the check ran and passed), "failed" (the check kept failing),
-            "unverified" (no check exists), or "unfinished" (out of steps).
+            "unverified" (no check exists), "unfinished" (out of steps), or "nothing"
+            (the AI stopped without writing anything; "reason" may say why).
     """
     event = on_event or (lambda kind, **info: None)
     budget = budget or max(getattr(llm, "context_budget", 9000), 9000)
@@ -422,7 +423,7 @@ def build(llm, task, ws: Workspace, check="", max_steps=40, fix_rounds=3, langua
     messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": goal}]
     report = {"status": "unfinished", "summary": "", "check": known_check, "check_output": "", "steps": 0,
               "rounds": 0}
-    nudged = False
+    nudged, empties = False, 0
     for step in range(max_steps):
         report["steps"] = step + 1
         reply = _chat(llm, messages, budget, max_tokens)
@@ -433,6 +434,17 @@ def build(llm, task, ws: Workspace, check="", max_steps=40, fix_rounds=3, langua
             # calling it. Either way the check decides: a finish in text counts, and so does
             # stopping a second time.
             text = reply.get("content") or ""
+            if not text.strip():
+                # An empty reply isn't "done": usually the model spent its whole reply on thinking
+                # (finish reason "length"). Give it more room and ask it to keep going.
+                empties += 1
+                if empties > 3:
+                    report["reason"] = "The AI kept sending empty replies."
+                    break
+                max_tokens = min(max_tokens * 2, 65536)
+                messages.append({"role": "user", "content": "Your last reply was empty. Continue with one tool "
+                                 "call; write big files in smaller parts if needed."})
+                continue
             messages.append({"role": "assistant", "content": text})
             finished = _finish_in_text(text)
             if finished is None and not nudged:
@@ -500,6 +512,8 @@ def build(llm, task, ws: Workspace, check="", max_steps=40, fix_rounds=3, langua
                                    "run the tests, then call finish again.")
     report["changed"] = sorted(ws.changed)
     report["changed_tests"] = ws.changed_tests()
+    if not ws.changed and report["status"] in ("unverified", "unfinished"):
+        report["status"] = "nothing"  # don't call it "built" when nothing was written
     return report
 
 
