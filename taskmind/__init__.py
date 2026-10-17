@@ -1,3 +1,3 @@
-"""TaskMind: a personal task agent for developers."""
+"""TaskMind: say what you want built; it builds it, tests it and proves it works."""
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"

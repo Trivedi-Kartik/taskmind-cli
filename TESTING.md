@@ -229,7 +229,7 @@ git add . && git commit -qm "Notes app" && echo ready
 
 | ID | Steps | Expect |
 |---|---|---|
-| P1 | `python3 scripts/build.py`, then `python3 dist/taskmind.pyz --version` and `python3 dist/taskmind.pyz help reminders` | taskmind 0.2.0, and the help works from the single file |
+| P1 | `python3 scripts/build.py`, then `python3 dist/taskmind.pyz --version` and `python3 dist/taskmind.pyz help reminders` | taskmind 0.3.0, and the help works from the single file |
 | P2 (optional) | If you have pipx: `pipx install /home/user/kartik/folder` then `tm --version` in a new terminal | The `tm` command works from anywhere |
 | P3 | In a new project folder (any `git init` folder with a file), `tm add "x"` then `tm go <id>` | First it asks "Allow this for this project?", naming your AI provider; answer **n**: "nothing was sent". Run again and answer y: it doesn't ask a third time |
 | P4 | `tm report-bug "testing the report"` | A saved report file; open it: version, system, provider name, recent errors, and **no API key** |
