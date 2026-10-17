@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "taskmind-cli"
+dynamic = ["version"]
+description = "TaskMind: a to-do list that thinks. Plans, checks and tracks your work with any AI, in your terminal"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = []
+keywords = ["tasks", "ai", "agent", "cli", "planning", "code review", "productivity"]
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development",
+    "Topic :: Office/Business :: Scheduling",
+]
+
+[project.urls]
+Homepage = "https://github.com/Trivedi-Kartik/taskmind-cli"
+Issues = "https://github.com/Trivedi-Kartik/taskmind-cli/issues"
+Documentation = "https://github.com/Trivedi-Kartik/taskmind-cli#readme"
+
+[project.optional-dependencies]
+pretty = ["rich"]        # nicer tables and colours
+claude = ["anthropic"]   # Claude as an AI provider
+all = ["rich", "anthropic"]
+
+[project.scripts]
+tm = "taskmind.cli:main"
+
+[tool.setuptools]
+packages = ["taskmind"]
+
+[tool.setuptools.dynamic]
+version = {attr = "taskmind.__version__"}
+
+[tool.setuptools.package-data]
+taskmind = ["guide.md"]   # the built-in help (`tm help`, `tm ask`) reads it

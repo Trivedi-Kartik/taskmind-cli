@@ -1,0 +1,255 @@
+"""Read-only tools that let the agent explore a code repository.
+
+Free-tier models have small token budgets, so every tool returns compact,
+truncated output instead of whole files or whole repos.
+"""
+
+import fnmatch
+import os
+import re
+import subprocess
+from pathlib import Path
+
+from taskmind.secrets import is_secret_file, redact
+
+SKIP_DIRS = {
+    ".git", "node_modules", ".venv", "venv", "env", "__pycache__", "dist", "build",
+    ".next", ".nuxt", "target", ".idea", ".vscode", "coverage", ".mypy_cache",
+    ".pytest_cache", "vendor", ".gradle", "Pods",
+}
+SKIP_SUFFIXES = {
+    ".png", ".jpg", ".jpeg", ".gif", ".ico", ".svg", ".webp", ".pdf", ".zip", ".gz",
+    ".tar", ".jar", ".so", ".dll", ".exe", ".bin", ".lock", ".min.js", ".map", ".woff",
+    ".woff2", ".ttf", ".mp4", ".mp3", ".pyc", ".class", ".db", ".sqlite",
+}
+MAX_FILES = 5000
+MAX_FILE_BYTES = 400_000
+MAX_TOOL_CHARS = 3000
+
+
+class Repo:
+    def __init__(self, root):
+        self.root = Path(root).expanduser().resolve()
+        if not self.root.is_dir():
+            raise ValueError(f"Repo path does not exist: {self.root}")
+        self.is_git = self._git("rev-parse", "--is-inside-work-tree", check=False).strip() == "true"
+        self._files = None
+
+    def _git(self, *args, check=True) -> str:
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(self.root), *args], capture_output=True, text=True, timeout=30
+            )
+        except FileNotFoundError as exc:
+            if check:
+                raise RuntimeError("git is not installed") from exc
+            return ""
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f"git {args[0]} took too long") from exc
+        if check and result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or f"git {args[0]} failed")
+        return result.stdout
+
+    def _safe(self, rel) -> Path:
+        path = (self.root / rel).resolve()
+        if path != self.root and self.root not in path.parents:
+            raise ValueError(f"Path is outside the repo: {rel}")
+        return path
+
+    def files(self) -> list:
+        if self._files is None:
+            if self.is_git:
+                # -z: raw names (no quoting of non-ASCII paths like café.py)
+                out = self._git("ls-files", "-z", "--cached", "--others", "--exclude-standard")
+                names = [n for n in out.split("\0") if n]
+            else:
+                names = []
+                for dirpath, dirnames, filenames in os.walk(self.root):
+                    dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")]
+                    rel = Path(dirpath).relative_to(self.root)
+                    names.extend(str(rel / f) if str(rel) != "." else f for f in filenames)
+                    if len(names) > MAX_FILES:
+                        break
+            self._files = sorted(
+                n for n in names
+                if not any(n.endswith(s) for s in SKIP_SUFFIXES)
+                and not any(part in SKIP_DIRS for part in Path(n).parts)
+                and not is_secret_file(n)  # .env, keys, credentials: never shown to the AI
+            )[:MAX_FILES]
+        return self._files
+
+    def tree(self, path=".", max_entries=200) -> str:
+        prefix = "" if path in (".", "", "/") else path.strip("/") + "/"
+        matches = [f for f in self.files() if f.startswith(prefix)]
+        if not matches:
+            return f"No files under '{path}'."
+        if len(matches) <= max_entries:
+            return "\n".join(matches)
+        # Too many files: summarize by directory instead.
+        counts = {}
+        for f in matches:
+            rest = f[len(prefix):]
+            top = rest.split("/", 1)[0] + ("/" if "/" in rest else "")
+            counts[top] = counts.get(top, 0) + 1
+        lines = [f"{prefix}{name}  ({n} files)" if name.endswith("/") else f"{prefix}{name}"
+                 for name, n in sorted(counts.items())]
+        return f"{len(matches)} files; showing directories:\n" + "\n".join(lines[:max_entries])
+
+    def search(self, pattern, glob=None, path=None, max_results=40) -> str:
+        try:
+            regex = re.compile(pattern, re.I)
+        except re.error as exc:
+            return f"Invalid regex: {exc}"
+        prefix = "" if path in (None, "", ".", "/") else path.strip("/") + "/"
+        hits = []
+        for name in self.files():
+            if prefix and not name.startswith(prefix):
+                continue
+            if glob and not fnmatch.fnmatch(name, glob) and not fnmatch.fnmatch(Path(name).name, glob):
+                continue
+            try:
+                path = self._safe(name)  # skips symlinks that point outside the repo
+                if path.stat().st_size > MAX_FILE_BYTES:
+                    continue
+                with open(path, encoding="utf-8", errors="strict") as fh:
+                    for lineno, line in enumerate(fh, start=1):
+                        if regex.search(line):
+                            hits.append(f"{name}:{lineno}: {line.strip()[:160]}")
+                            if len(hits) >= max_results:
+                                return "\n".join(hits) + f"\n(stopped at {max_results} matches)"
+            except (UnicodeDecodeError, OSError, ValueError):
+                continue
+        return "\n".join(hits) if hits else f"No matches for /{pattern}/."
+
+    def read(self, path, start=1, end=None, max_lines=120) -> str:
+        target = self._safe(path)
+        if is_secret_file(target.relative_to(self.root)):
+            return f"{path} looks like a secrets file (keys, passwords), so TaskMind never reads it."
+        if not target.is_file():
+            return f"Not a file: {path}"
+        if target.stat().st_size > MAX_FILE_BYTES:
+            return f"{path} is too large to read ({target.stat().st_size // 1000} KB)."
+        try:
+            lines = target.read_text(encoding="utf-8").splitlines()
+        except UnicodeDecodeError:
+            return f"{path} is not a text file."
+        start = max(1, int(start or 1))
+        end = int(end) if end else 0
+        if end < start:  # missing, or nonsense like start=260, end=200
+            end = start + max_lines - 1
+        end = min(len(lines), end, start + max_lines - 1)
+        body = "\n".join(f"{n:>5} {lines[n - 1]}" for n in range(start, end + 1))
+        more = f"\n... ({len(lines) - end} more lines)" if end < len(lines) else ""
+        return f"{path} (lines {start}-{end} of {len(lines)})\n{body}{more}"
+
+    def log(self, n=15, since=None) -> list:
+        """Recent commits as dicts: sha, date, subject, body."""
+        if not self.is_git:
+            return []
+        args = ["log", f"-n{int(n)}", "--format=%H%x1f%cI%x1f%s%x1f%b%x1e"]
+        if since:
+            args.append(f"--since={since}")
+        out = self._git(*args, check=False)
+        commits = []
+        for record in out.split("\x1e"):
+            parts = record.strip("\n").split("\x1f")
+            if len(parts) == 4:
+                commits.append(dict(zip(("sha", "date", "subject", "body"), parts)))
+        return commits
+
+    def overview(self) -> str:
+        """A short, cheap summary used when tools are unavailable."""
+        files = self.files()
+        readme = next((f for f in files if Path(f).name.lower().startswith("readme")), None)
+        text = f"Repository: {self.root.name} ({len(files)} files)\n\n{self.tree(max_entries=120)}"
+        if readme:
+            text += "\n\n" + self.read(readme, 1, 40)
+        return redact(text)
+
+
+TOOL_SPECS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "list_files",
+            "description": "List files in the repo, optionally under a sub-directory.",
+            "parameters": {
+                "type": "object",
+                "properties": {"path": {"type": "string", "description": "Sub-directory, default '.'"}},
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_code",
+            "description": "Case-insensitive regex search across repo files. Returns file:line: text.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string", "description": "Regular expression"},
+                    "glob": {"type": "string", "description": "Optional file filter like '*.py'"},
+                    "path": {"type": "string", "description": "Optional sub-directory to search in"},
+                },
+                "required": ["pattern"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "description": "Read part of a file with line numbers (max 120 lines per call). "
+                           "Use search_code first to find the right line numbers.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "start": {"type": "integer"},
+                    "end": {"type": "integer"},
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "recent_commits",
+            "description": "Show recent git commit subjects to understand ongoing work.",
+            "parameters": {"type": "object", "properties": {"n": {"type": "integer"}}},
+        },
+    },
+]
+
+
+def _arg(args, *names, default=None):
+    """Models often guess argument names (line_start, start_line...); accept the common ones."""
+    for name in names:
+        if args.get(name) not in (None, ""):
+            return args[name]
+    return default
+
+
+def dispatch(repo: Repo, name: str, args: dict) -> str:
+    try:
+        if name == "list_files":
+            result = repo.tree(_arg(args, "path", "dir", "directory", default="."))
+        elif name == "search_code":
+            result = repo.search(_arg(args, "pattern", "query", "regex"), args.get("glob"),
+                                 _arg(args, "path", "dir", "directory"))
+        elif name == "read_file":
+            result = repo.read(_arg(args, "path", "file", "file_path"),
+                               _arg(args, "start", "start_line", "line_start", "from_line", default=1),
+                               _arg(args, "end", "end_line", "line_end", "to_line"))
+        elif name == "recent_commits":
+            commits = repo.log(min(int(args.get("n") or 15), 30))
+            result = "\n".join(f"{c['sha'][:8]} {c['date'][:10]} {c['subject']}" for c in commits) or "No commits."
+        else:
+            result = f"Unknown tool: {name}"
+    except (KeyError, ValueError, TypeError, AttributeError, RuntimeError, OSError) as exc:
+        result = f"Tool error: {exc}"
+    result = redact(result)  # every tool result, before it can reach the AI
+    if len(result) > MAX_TOOL_CHARS:
+        result = result[:MAX_TOOL_CHARS] + "\n... (truncated)"
+    return result
