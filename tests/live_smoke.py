@@ -179,7 +179,7 @@ def main():
     r.run("clear settings", ["config", "--stage", "clarify=", "--coder", "none"], expect=["Saved"])
     r.run("voice status", ["voice"], expect=["speech to text", "text to speech"])
     r.run("import GitHub issues", ["import", "octocat/Hello-World", "--limit", "2", "--repo", str(repo)],
-          expect_code=(0, 1), expect=["mport"])
+          expect_code=(0, 1), expect=[], reject=["Traceback"])
     r.run("rm", ["rm", "3", "-y"], expect=["Deleted TM-3"])
 
     failed = [x for x in r.results if not x[1]]

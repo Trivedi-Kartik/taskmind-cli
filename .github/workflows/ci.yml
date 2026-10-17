@@ -16,6 +16,8 @@ jobs:
           - os: ubuntu-latest
             python: "3.11"
     runs-on: ${{ matrix.os }}
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # higher GitHub API limit for `tm import` in the smoke test
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

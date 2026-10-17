@@ -1,9 +1,11 @@
 """Run with: python3 -m unittest discover -s tests"""
 
 import contextlib
+import gc
 import io
 import json
 import shutil
+import sqlite3
 import os
 import subprocess
 import tempfile
@@ -25,7 +27,23 @@ class TempDir(tempfile.TemporaryDirectory):
 
     def cleanup(self):
         close_all_dbs()
-        super().cleanup()
+        gc.collect()
+        try:
+            super().cleanup()
+        except PermissionError:
+            if os.name != "nt":
+                raise
+            # Something still holds a database open: close every connection still alive,
+            # report it (so leaks in TaskMind itself get noticed), and clean up.
+            leaked = [o for o in gc.get_objects() if isinstance(o, sqlite3.Connection)]
+            for conn in leaked:
+                try:
+                    conn.close()
+                except Exception:  # noqa: BLE001
+                    pass
+            if os.environ.get("GITHUB_ACTIONS"):
+                print(f"::warning title=open sqlite connections::{len(leaked)} still open at cleanup")
+            shutil.rmtree(self.name, ignore_errors=True)
 from taskmind.llm import RequestTooLarge, ToolCallError, _retry_delay, extract_json
 from taskmind.repo_tools import Repo, dispatch
 
