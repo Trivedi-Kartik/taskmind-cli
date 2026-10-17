@@ -1022,6 +1022,149 @@ def cmd_exec(args):
     ui.out(f"[dim]When you've committed, run `tm sync {task['id']}` to update progress.[/dim]")
 
 
+def _build_goal(db, args):
+    """(task text, short title, project folder, existing task or None) for `tm build`."""
+    words = list(args.task or [])
+    if len(words) == 1 and words[0].isdigit():
+        task = get_task(db, int(words[0]))
+        parts = [task["title"], task.get("description") or "", task.get("definition") or ""]
+        steps = [s for s in db.subtasks(task["id"]) if not s.get("done")]
+        if steps:
+            parts.append("Plan:\n" + "\n".join(f"- {s['title']}: {s.get('details') or ''}" for s in steps))
+        text = "\n\n".join(p for p in parts if p)
+        return text, task["title"], task.get("repo") or os.getcwd(), task
+    if args.voice:
+        ui.out("Say what you want built.")
+        words = [listen()]
+        ui.out(f"[dim]Heard: {ui.escape(words[0])}[/dim]")
+    text = " ".join(words).strip()
+    if not text:
+        raise CLIError('Say what to build: tm build "add a dark mode toggle" (or tm build 3 for task 3).')
+    return text, text.splitlines()[0][:100], os.getcwd(), None
+
+
+def _new_project(name):
+    folder = Path(name).expanduser().resolve()
+    if folder.exists() and any(folder.iterdir()):
+        raise CLIError(f"{folder} already exists and isn't empty. Pick another name, or cd into it and "
+                       "run `tm build` without --new.")
+    folder.mkdir(parents=True, exist_ok=True)
+    return str(folder)
+
+
+def _show_build_event(kind, name=None, args=None, result=None, command=None, code=None, output=None):
+    args = args or {}
+    if kind == "tool":
+        if name == "run_command":
+            ui.out(f"  ▶ [cyan]{ui.escape(str(args.get('command', ''))[:120])}[/cyan]")
+        elif name in ("write_file", "edit_file"):
+            ui.out(f"  ✏️  {ui.escape(str(args.get('path') or args.get('file') or ''))}")
+        else:
+            target = args.get("path") or args.get("pattern") or args.get("query") or "."
+            ui.out(f"  [dim]🔍 {name.replace('_', ' ')} {ui.escape(str(target))[:80]}[/dim]")
+    elif kind == "result":
+        if name == "run_command":
+            first = result.split("\n", 1)[0]
+            ok = first == "exit code 0"
+            ui.out(f"    [{'green' if ok else 'yellow'}]{ui.escape(first)}[/]" if first.startswith("exit code")
+                   else f"    [yellow]{ui.escape(first[:160])}[/yellow]")
+        elif result.startswith("Tool error"):
+            ui.out(f"    [yellow]{ui.escape(result[:160])}[/yellow]")
+    elif kind == "check":
+        ui.out(f"\n[bold]Checking it myself:[/bold] {ui.escape(command)}")
+    elif kind == "checked":
+        if code == 0:
+            ui.out("[green]✅ Passed.[/green]")
+        else:
+            ui.out(f"[yellow]❌ Failed (exit code {code}). Sending the errors back to fix them...[/yellow]")
+
+
+BUILD_RESULT = {
+    "passed": "[bold green]✅ Done and checked: the tests pass.[/bold green]",
+    "failed": "[bold red]❌ Not done: the tests still fail after several fixes.[/bold red]",
+    "unverified": "[bold yellow]🟡 Built, but not proven: there's no test to run.[/bold yellow]",
+    "unfinished": "[bold yellow]🟡 Not finished: the AI ran out of steps.[/bold yellow]",
+}
+
+
+def cmd_build(args):
+    from taskmind import builder
+
+    cfg = ensure_setup()
+    db = open_db()
+    text, title, root, task = _build_goal(db, args)
+    if args.new:
+        root = _new_project(args.new)
+    try:
+        base, branch = builder.start_branch(root, title, new_project=bool(args.new))
+    except builder.GitError as exc:
+        raise CLIError(str(exc)) from exc
+    ws = builder.Workspace(root, approve=lambda command, reason: args.yes or (
+        interactive() and ui.confirm(f"The AI wants to run [bold]{ui.escape(command)}[/bold] "
+                                     f"(it {reason}). Allow?")))
+    cands = routing.candidates(cfg, "build")
+    ensure_code_consent(ws.repo, "build", cands)
+    if task is None:
+        task = get_task(db, db.add_task(title, text if text != title else "", repo=str(ws.root)))
+    db.update_task(task["id"], status=_advance(task, "in_progress"))
+    db.log(task["id"], "build", f"Build started on branch {branch}")
+    ui.out(f"🔨 Building [bold]TM-{task['id']}[/bold] in {ui.escape(str(ws.root))}")
+    ui.out(f"[dim]On a new branch, {ui.escape(branch)}: your {ui.escape(base)} branch isn't touched "
+           "until you keep the result.[/dim]\n")
+
+    def leave_note():
+        ui.out(f"[dim]The work so far is on branch {ui.escape(branch)}. Back to yours: "
+               f"git checkout {ui.escape(base)}[/dim]")
+
+    profile = insights.profile(cfg)
+    try:
+        report = AI("build", task, cands).run(lambda llm: builder.build(
+            llm, text, ws, check=args.check or "", max_steps=args.max_steps, language=profile["language"],
+            simple=simple_mode() or args.simple, on_event=_show_build_event))
+    except (LLMError, KeyboardInterrupt):
+        builder.save_work(ws.root, f"TaskMind (unfinished): {title}")
+        leave_note()
+        raise
+    files = builder.save_work(ws.root, f"{title}\n\n{report['summary']}\n\nTM-{task['id']}".strip())
+
+    ui.out("\n" + BUILD_RESULT[report["status"]])
+    if report["summary"]:
+        ui.out(ui.escape(report["summary"]))  # not markdown: it would swallow <placeholders>
+    if files:
+        ui.out(f"[dim]Changed: {ui.escape(', '.join(files[:12]))}{' ...' if len(files) > 12 else ''}[/dim]")
+    if report["status"] == "failed":
+        ui.out(f"[dim]Last test output:[/dim]\n{ui.escape(report['check_output'][-1200:])}")
+    if report["changed_tests"]:
+        ui.out(f"[yellow]Look at these before keeping: the AI changed tests that already existed: "
+               f"{ui.escape(', '.join(report['changed_tests']))}[/yellow]")
+    db.log(task["id"], "build", f"{report['status']}: {report['check'] or 'no check'}; "
+                                f"{len(files)} files; {report['steps']} steps")
+    if not files:
+        builder.discard(ws.root, base, branch)
+        ui.out("Nothing was changed, so there's nothing to keep.")
+        return 1
+
+    passed = report["status"] == "passed"
+    if args.yes and passed or interactive() and ui.confirm(
+            f"Keep it (add it to your {base} branch)?", default=passed):
+        builder.keep(ws.root, base, branch)
+        if passed:
+            for step in db.subtasks(task["id"]):
+                db.mark_subtask(task["id"], step["position"], True, ref=f"tm build ({branch})")
+            db.update_task(task["id"], status="done")
+        ui.out(f"[green]Kept on {ui.escape(base)}.[/green] " + ("" if passed else
+               f"[dim]TM-{task['id']} stays open until it's proven.[/dim]"))
+        return 0 if passed else 1
+    if interactive() and ui.confirm("Throw the work away?", default=False):
+        builder.discard(ws.root, base, branch)
+        ui.out("Thrown away. Your code is exactly as it was.")
+        return 1
+    ui.out(f"Left on branch [bold]{ui.escape(branch)}[/bold] for you to look at "
+           f"(git diff {ui.escape(base)}...{ui.escape(branch)}).")
+    leave_note()
+    return 0 if passed else 1
+
+
 def cmd_step(args):
     db = open_db()
     if args.action == "add":
@@ -1239,8 +1382,8 @@ def cmd_rm(args):
 def build_parser():
     p = FriendlyParser(
         prog="tm",
-        description="TaskMind: a personal task agent for developers. "
-                    "Capture → clarify → analyze code → plan → hand off → track.",
+        description="TaskMind: say what you want built; it builds it, tests it and proves it works. "
+                    "Start with: tm build \"...\"",
     )
     p.add_argument("--version", action="version", version=f"taskmind {__version__}")
     sub = p.add_subparsers(dest="command", metavar="<command>")
@@ -1380,6 +1523,17 @@ def build_parser():
     sp.add_argument("--tool", choices=list(TOOLS), default="claude")
     sp.add_argument("-y", "--yes", action="store_true")
 
+    sp = add("build", cmd_build, "Build it: the AI writes the code, runs the tests, fixes them and saves the "
+                                 "work on a safe branch")
+    sp.add_argument("task", nargs="*", help='What to build, in your own words, or a task number')
+    sp.add_argument("--new", metavar="FOLDER", help="Start a brand-new project in this folder")
+    sp.add_argument("--check", metavar="COMMAND", help="The command that proves it works (default: the "
+                                                       "project's tests)")
+    sp.add_argument("--voice", action="store_true", help="Say what to build")
+    sp.add_argument("--simple", action="store_true", help="Explain the result without technical words")
+    sp.add_argument("-y", "--yes", action="store_true", help="Allow installs and deletions without asking, "
+                                                             "and keep the result if the tests pass")
+    sp.add_argument("--max-steps", type=int, default=40, help=argparse.SUPPRESS)
     sp = add("step", cmd_step, "Add, edit, remove or list a task's steps yourself")
     sp.add_argument("action", choices=["add", "edit", "rm", "list", "show"])
     sp.add_argument("ref", help="Task (for add/list), or step like 3.2 (for edit/rm/show); `tm step 3.2` shows it")

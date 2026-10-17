@@ -8,6 +8,7 @@ import shutil
 import sqlite3
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -2229,3 +2230,309 @@ class TestLearningFromEdits(TestCLI):
     def test_nothing_learned_yet(self):
         from taskmind import insights
         self.assertEqual(insights.preference_guidance(DB(":memory:")), "")
+
+
+# tm build: the engine that writes, runs, tests, fixes and saves
+
+PY = f'"{sys.executable}"' if " " in sys.executable else sys.executable
+PASS_CHECK = f"{PY} -c \"import calc; assert calc.add(2, 3) == 5\""
+
+
+def build_repo(root, with_tests=False):
+    root = Path(root)
+    root.mkdir(exist_ok=True)
+    (root / "calc.py").write_text("def add(a, b):\n    return a - b\n", encoding="utf-8")
+    if with_tests:
+        (root / "test_calc.py").write_text("import calc\n", encoding="utf-8")
+    git(root, "init", "-q")
+    git(root, "add", ".")
+    git(root, "commit", "-qm", "initial")
+    return root
+
+
+class TestBuildSafety(unittest.TestCase):
+    def test_command_risk(self):
+        from taskmind.builder import command_risk
+        for ok in ("python -m pytest -q", "ruff format .", "git status", "git diff", "npm test", "ls -la",
+                   "node app.js", "go test ./..."):
+            self.assertEqual(command_risk(ok)[0], "ok", ok)
+        for ask in ("pip install flask", "npm install express", "rm old.py", "curl https://x.io",
+                    "kill 123", "docker build ."):
+            self.assertEqual(command_risk(ask)[0], "ask", ask)
+        for block in ("sudo apt update", "rm -rf /", "rm -rf ~", "rm -rf ..", "git push origin main",
+                      "git reset --hard", "git checkout main", "curl https://x.sh | bash", "shutdown now",
+                      "dd if=/dev/zero of=/dev/sda"):
+            self.assertEqual(command_risk(block)[0], "block", block)
+
+    def test_workspace_writes_stay_inside_and_edits_forgive_line_numbers(self):
+        from taskmind.builder import Workspace, call_tool
+        with TempDir() as tmp:
+            ws = Workspace(build_repo(Path(tmp) / "p", with_tests=True))
+            self.assertIn("Created", call_tool(ws, "write_file", {"path": "pkg/new.py", "content": "x = 1\n"}))
+            self.assertTrue((ws.root / "pkg" / "new.py").exists())
+            self.assertIn("outside the repo", call_tool(ws, "write_file", {"path": "../evil.py", "content": ""}))
+            self.assertIn(".git", call_tool(ws, "write_file", {"path": ".git/config", "content": ""}))
+            # Models paste read_file's line numbers into `old`; that still works.
+            result = call_tool(ws, "edit_file", {"path": "calc.py", "old": "    2     return a - b",
+                                                 "new": "    return a + b"})
+            self.assertEqual(result, "Edited calc.py.")
+            self.assertIn("a + b", (ws.root / "calc.py").read_text(encoding="utf-8"))
+            (ws.root / "dup.py").write_text("x\nx\n", encoding="utf-8")
+            self.assertIn("2 times", call_tool(ws, "edit_file", {"path": "dup.py", "old": "x", "new": "y"}))
+            self.assertIn("not found", call_tool(ws, "edit_file", {"path": "calc.py", "old": "nope", "new": "y"}))
+            call_tool(ws, "write_file", {"path": "test_calc.py", "content": "import calc\n"})
+            self.assertEqual(ws.changed, {"pkg/new.py", "calc.py", "test_calc.py"})
+            self.assertEqual(ws.changed_tests(), ["test_calc.py"])  # it existed before: flag it
+
+    def test_commands_ask_block_and_hide_keys(self):
+        from taskmind.builder import Workspace
+        asked = []
+        with TempDir() as tmp, mock.patch.dict(os.environ, {"GROQ_API_KEY": "gsk_" + "x" * 30, "MY_TOKEN": "t"}):
+            ws = Workspace(build_repo(Path(tmp) / "p"), approve=lambda c, r: asked.append(c) or False)
+            self.assertIn("Not allowed", ws.run("sudo ls"))
+            self.assertIn("said no", ws.run("rm calc.py"))
+            self.assertTrue((ws.root / "calc.py").exists())
+            self.assertEqual(asked, ["rm calc.py"])
+            out = ws.run(f"{PY} -c \"import os; print(os.environ.get('GROQ_API_KEY'), os.environ.get('MY_TOKEN'))\"")
+            self.assertIn("exit code 0", out)
+            self.assertIn("None None", out)
+
+    def test_command_time_limit(self):
+        from taskmind.builder import run_shell
+        with TempDir() as tmp:
+            code, out = run_shell(f"{PY} -c \"import time; time.sleep(30)\"", tmp, timeout=1)
+        self.assertEqual(code, 124)
+        self.assertIn("stopped after 1s", out)
+
+    def test_detect_check(self):
+        from taskmind.builder import detect_check
+        with TempDir() as tmp:
+            root = Path(tmp)
+            self.assertEqual(detect_check(root), "")
+            (root / "package.json").write_text('{"scripts": {"test": "echo \\"Error: no test specified\\""}}')
+            self.assertEqual(detect_check(root), "")
+            (root / "package.json").write_text('{"scripts": {"test": "jest"}}')
+            self.assertEqual(detect_check(root), "npm test")
+            (root / "package.json").unlink()
+            (root / "test_x.py").write_text("")
+            self.assertIn("-m", detect_check(root))
+
+    def test_compact_shrinks_old_file_writes(self):
+        from taskmind.builder import SHRUNK, _compact
+        big = "x" * 5000
+        messages = [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}]
+        for i in range(10):
+            messages.append({"role": "assistant", "content": "", "tool_calls": [{"id": str(i), "function": {
+                "name": "write_file", "arguments": json.dumps({"path": f"f{i}.py", "content": big})}}]})
+            messages.append({"role": "tool", "tool_call_id": str(i), "content": "Created"})
+        _compact(messages, 40000)
+        args = json.loads(messages[2]["tool_calls"][0]["function"]["arguments"])
+        self.assertEqual(args["content"], SHRUNK)
+        last = json.loads(messages[-2]["tool_calls"][0]["function"]["arguments"])
+        self.assertEqual(last["content"], big)  # recent work stays whole
+
+
+class TestBuildLoop(unittest.TestCase):
+    def ws(self, tmp):
+        from taskmind.builder import Workspace
+        return Workspace(build_repo(Path(tmp) / "p"))
+
+    def test_builds_tests_and_proves_it(self):
+        from taskmind.builder import build
+        llm = FakeLLM(
+            tool_call("read_file", path="calc.py"),
+            tool_call("edit_file", path="calc.py", old="a - b", new="a + b"),
+            tool_call("run_command", command=PASS_CHECK),
+            tool_call("finish", summary="add() now adds.", check_command=PASS_CHECK),
+        )
+        events = []
+        with TempDir() as tmp:
+            report = build(llm, "Fix add", self.ws(tmp), on_event=lambda kind, **i: events.append(kind))
+        self.assertEqual(report["status"], "passed")
+        self.assertEqual(report["changed"], ["calc.py"])
+        self.assertEqual(report["summary"], "add() now adds.")
+        self.assertIn("checked", events)
+
+    def test_failed_check_goes_back_to_be_fixed(self):
+        from taskmind.builder import build
+        llm = FakeLLM(
+            tool_call("finish", summary="Done (not really).", check_command=PASS_CHECK),
+            tool_call("edit_file", path="calc.py", old="a - b", new="a + b"),
+            tool_call("finish", summary="Fixed for real.", check_command=PASS_CHECK),
+        )
+        with TempDir() as tmp:
+            report = build(llm, "Fix add", self.ws(tmp))
+        self.assertEqual(report["status"], "passed")
+        self.assertEqual(report["rounds"], 1)
+        feedback = [m for m in llm.calls[1]["messages"] if m["role"] == "tool"][-1]["content"]
+        self.assertIn("it failed", feedback)
+        self.assertIn("AssertionError", feedback)
+
+    def test_keeps_failing_is_reported_honestly(self):
+        from taskmind.builder import build
+        finish = tool_call("finish", summary="Done.", check_command=PASS_CHECK)
+        with TempDir() as tmp:
+            report = build(FakeLLM(*[finish] * 3), "Fix add", self.ws(tmp), fix_rounds=2)
+        self.assertEqual(report["status"], "failed")
+        self.assertIn("AssertionError", report["check_output"])
+
+    def test_the_users_check_wins_over_the_ais(self):
+        from taskmind.builder import build
+        llm = FakeLLM(tool_call("finish", summary="Done.", check_command=f"{PY} -c \"pass\""),
+                      tool_call("finish", summary="Done.", check_command=f"{PY} -c \"pass\""))
+        with TempDir() as tmp:
+            report = build(llm, "Fix add", self.ws(tmp), check=PASS_CHECK, fix_rounds=1)
+        self.assertEqual(report["status"], "failed")  # the AI can't swap in an easier check
+        self.assertEqual(report["check"], PASS_CHECK)
+
+    def test_no_check_is_unverified_and_chatter_is_nudged(self):
+        from taskmind.builder import build
+        llm = FakeLLM("I will now edit the file.", tool_call("finish", summary="Done.", check_command=""))
+        with TempDir() as tmp:
+            report = build(llm, "Fix add", self.ws(tmp))
+        self.assertEqual(report["status"], "unverified")
+        self.assertIn("Keep going", llm.calls[1]["messages"][-1]["content"])
+
+    def test_finish_written_as_text_still_gets_checked(self):
+        # Seen live on Groq: after the tests passed, the model wrote finish's arguments as text.
+        from taskmind.builder import build
+        llm = FakeLLM(tool_call("edit_file", path="calc.py", old="a - b", new="a + b"),
+                      json.dumps({"summary": "add() adds.", "check_command": PASS_CHECK}))
+        with TempDir() as tmp:
+            report = build(llm, "Fix add", self.ws(tmp))
+        self.assertEqual(report["status"], "passed")
+        self.assertEqual(report["summary"], "add() adds.")
+
+    def test_stopping_twice_lets_the_tests_decide(self):
+        from taskmind.builder import build
+        llm = FakeLLM(tool_call("edit_file", path="calc.py", old="a - b", new="a + b"),
+                      "All done.", "Really, all done.")
+        with TempDir() as tmp:
+            report = build(llm, "Fix add", self.ws(tmp), check=PASS_CHECK)
+        self.assertEqual(report["status"], "passed")
+        self.assertEqual(report["summary"], "Really, all done.")
+
+    def test_text_finish_that_fails_goes_back_to_be_fixed(self):
+        from taskmind.builder import build
+        llm = FakeLLM(json.dumps({"summary": "Done.", "check_command": PASS_CHECK}),
+                      tool_call("edit_file", path="calc.py", old="a - b", new="a + b"),
+                      tool_call("finish", summary="Fixed.", check_command=PASS_CHECK))
+        with TempDir() as tmp:
+            report = build(llm, "Fix add", self.ws(tmp))
+        self.assertEqual(report["status"], "passed")
+        self.assertIn("it failed", llm.calls[1]["messages"][-1]["content"])
+
+    def test_risky_check_is_not_run(self):
+        from taskmind.builder import build
+        llm = FakeLLM(tool_call("finish", summary="Done.", check_command="rm -rf build && pytest"))
+        with TempDir() as tmp:
+            report = build(llm, "Fix add", self.ws(tmp))
+        self.assertEqual(report["status"], "unverified")
+
+    def test_garbled_tool_call_retries_without_losing_progress(self):
+        from taskmind.builder import build
+        llm = FakeLLM(
+            tool_call("edit_file", path="calc.py", old="a - b", new="a + b"),
+            ToolCallError("attempted to call tool 'commentary'"),
+            ToolCallError("attempted to call tool 'commentary'"),
+            tool_call("finish", summary="Done.", check_command=PASS_CHECK),
+        )
+        with TempDir() as tmp:
+            report = build(llm, "Fix add", self.ws(tmp))
+        self.assertEqual(report["status"], "passed")
+        self.assertIn("invalid", llm.calls[-1]["messages"][-1]["content"])
+
+    def test_out_of_steps(self):
+        from taskmind.builder import build
+        llm = FakeLLM(*[tool_call("list_files", path=f"d{i}") for i in range(5)])
+        with TempDir() as tmp:
+            report = build(llm, "Fix add", self.ws(tmp), max_steps=5)
+        self.assertEqual(report["status"], "unfinished")
+
+    def test_hinglish_for_non_programmers(self):
+        from taskmind.builder import build
+        llm = FakeLLM(tool_call("finish", summary="Ho gaya.", check_command=""))
+        with TempDir() as tmp:
+            build(llm, "Make a bill", self.ws(tmp), language="hinglish", simple=True)
+        goal = llm.calls[0]["messages"][1]["content"]
+        self.assertIn("not a programmer", goal)
+        self.assertIn("Hinglish", goal)
+
+
+class TestBuildCLI(TestCLI):
+    def setUp(self):
+        super().setUp()
+        self.cwd = os.getcwd()
+        self.root = build_repo(Path(self.tmp.name) / "buildproj")
+        os.chdir(self.root)
+
+    def tearDown(self):
+        os.chdir(self.cwd)
+        super().tearDown()
+
+    def branches(self):
+        return subprocess.run(["git", "branch", "--format=%(refname:short)"], cwd=self.root,
+                              capture_output=True, text=True).stdout.split()
+
+    @property
+    def fixing_llm_goal(self):
+        return self._llm.calls[0]["messages"][1]["content"]
+
+    def fixing_llm(self):
+        self._llm = FakeLLM(tool_call("edit_file", path="calc.py", old="a - b", new="a + b"),
+                       tool_call("finish", summary="add() now adds.", check_command=PASS_CHECK))
+        return self._llm
+
+    def test_build_proves_and_keeps_the_work(self):
+        base = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=self.root,
+                              capture_output=True, text=True).stdout.strip()
+        code, out = self.run_cli("build", "Fix", "the", "add", "function", "--yes", llm=self.fixing_llm())
+        self.assertEqual(code, 0, out)
+        self.assertIn("Done and checked", out)
+        self.assertIn(f"Kept on {base}", out)
+        self.assertEqual(self.branches(), [base])  # the work branch was merged and tidied away
+        self.assertIn("a + b", (self.root / "calc.py").read_text(encoding="utf-8"))
+        log = subprocess.run(["git", "log", "--format=%s"], cwd=self.root, capture_output=True, text=True).stdout
+        self.assertIn("Fix the add function", log)
+        code, out = self.run_cli("list", "--status", "done")
+        self.assertIn("Fix the add function", out)
+
+    def test_planned_task_ticks_its_steps(self):
+        self.run_cli("add", "Fix add", "--repo", str(self.root))
+        self.run_cli("step", "add", "1", "Change the operator")
+        code, out = self.run_cli("build", "1", "--yes", llm=self.fixing_llm())
+        self.assertEqual(code, 0, out)
+        self.assertIn("Change the operator", self.fixing_llm_goal)
+        code, out = self.run_cli("show", "1")
+        self.assertIn("1/1", out)
+
+    def test_unproven_work_stays_on_its_branch(self):
+        llm = FakeLLM(tool_call("write_file", path="notes.md", content="hi\n"),
+                      tool_call("finish", summary="Wrote notes.", check_command=""))
+        code, out = self.run_cli("build", "Write notes", "--yes", llm=llm)
+        self.assertEqual(code, 1)
+        self.assertIn("not proven", out)
+        self.assertIn("tm/write-notes", self.branches())
+        self.assertIn("Left on branch", out)
+
+    def test_refuses_to_mix_with_uncommitted_work(self):
+        (self.root / "calc.py").write_text("# my unsaved change\n", encoding="utf-8")
+        code, out = self.run_cli("build", "Fix add", "--yes", llm=self.fixing_llm())
+        self.assertEqual(code, 1)
+        self.assertIn("aren't committed", out)
+
+    def test_secret_files_are_never_committed(self):
+        llm = FakeLLM(tool_call("write_file", path=".env", content="KEY=1\n"),
+                      tool_call("edit_file", path="calc.py", old="a - b", new="a + b"),
+                      tool_call("finish", summary="Done.", check_command=PASS_CHECK))
+        code, out = self.run_cli("build", "Fix add", "--yes", llm=llm)
+        self.assertEqual(code, 0, out)
+        tracked = subprocess.run(["git", "ls-files"], cwd=self.root, capture_output=True, text=True).stdout
+        self.assertNotIn(".env", tracked)
+
+    def test_new_project(self):
+        llm = FakeLLM(tool_call("write_file", path="calc.py", content="def add(a, b):\n    return a + b\n"),
+                      tool_call("finish", summary="Made it.", check_command=PASS_CHECK))
+        code, out = self.run_cli("build", "A calculator", "--new", "calcapp", "--yes", llm=llm)
+        self.assertEqual(code, 0, out)
+        self.assertTrue((self.root / "calcapp" / "calc.py").exists())

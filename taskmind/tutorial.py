@@ -14,17 +14,21 @@ from taskmind import config, ui
 from taskmind.core import remove_tree
 from taskmind.db import close_all
 
-OVERVIEW = """[bold]TaskMind: a to-do list that thinks.[/bold] A task goes through four phases:
+OVERVIEW = """[bold]TaskMind: say what you want built, and it builds it, tests it and proves it works.[/bold]
 
-  [bold]1. WRITE IT DOWN[/bold]  →  [bold]2. THINK IT THROUGH[/bold]  →  [bold]3. DO IT[/bold]  →  [bold]4. CHECK IT[/bold]
-     tm add             tm go                  tm prompt     tm verify
-                                               tm done
+  [bold cyan]tm build "add a CSV export"[/bold cyan]   writes the code and tests, runs them, fixes them,
+                                 saves the work on a safe branch; Enter keeps it
+  tm build --new shop "..."     a brand-new project (Hindi and Hinglish welcome)
+
+  Bigger work? Plan it first:  [bold]1. WRITE IT DOWN[/bold] → [bold]2. THINK IT THROUGH[/bold] → [bold]3. BUILD IT[/bold] → [bold]4. CHECK IT[/bold]
+                                  tm add              tm go                tm build 1     tm verify
 
   tm add "..."     write a task down (it gets a number: 1, 2, 3 ...)
   tm list          show your to-do list
   tm show 1        everything about task 1
   tm go 1          AI asks questions, reads your code, plans steps 1.1, 1.2
-  tm prompt 1.1    instructions for step 1.1, to paste into Claude Code
+  tm build 1       build task 1 following its plan, tested
+  tm prompt 1.1    or: instructions for step 1.1, to paste into Claude Code
   tm done 1.1      tick off step 1.1 (tm sync does it from git commits)
   tm verify 1      AI checks the finished code against the plan
   tm today         what to work on today
@@ -151,7 +155,7 @@ def run(main):
     total = 8
     ui.out("\n[bold]Welcome to TaskMind![/bold] In about 10 minutes you'll take one task from idea to "
            "checked code, and learn every main command along the way.")
-    ui.out(OVERVIEW.split("\n\n  tm add")[0])
+    ui.out(OVERVIEW.split("\n\n  Bigger work?")[0])
     ui.out("\n[dim]I'll create a [bold]practice project[/bold] (a tiny pretend notes app) and a separate "
            "practice to-do list, so your real tasks and code are never touched. A few AI calls are used.[/dim]")
     if not ui.confirm("Ready to start?", default=True):
@@ -199,8 +203,9 @@ def run(main):
         pause()
 
         lesson(4, total, "Do it: tm prompt",
-               "TaskMind doesn't write code itself; Claude Code, Cursor or you do. `tm prompt` turns a "
-               "step into complete instructions for them, including the risks to handle.")
+               "In real use, `tm build 1` would now write and test the code itself. Here you'll see the "
+               "other way: `tm prompt` turns a step into complete instructions for Claude Code, Cursor or "
+               "you, including the risks to handle.")
         run_command(main, ["prompt", "1.1", "--print"])
         ui.out("\n[green]What happened:[/green] those are the instructions you'd paste into Claude Code. "
                "(Without --print they're copied to your clipboard.) They ask for \"TM-1.1\" in the commit "

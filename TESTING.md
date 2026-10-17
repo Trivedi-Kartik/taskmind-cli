@@ -236,11 +236,32 @@ git add . && git commit -qm "Notes app" && echo ready
 | P5 | `tm feedback "the plans are great"` | "Thank you!" and where it was saved |
 | P6 | Remove a step from an AI plan (`tm step rm <id>.2`) and add one (`tm step add <id> "Write tests"`) on two tasks, then `tm me` | "Learned from your plan edits: ..." mentions "Write tests"; the next `tm go` says "Planned the way you like" |
 
+## Q. Build it: tm build (start here: this is the main feature now)
+
+Make a small practice project first:
+
+```sh
+mkdir -p ~/tm-build && cd ~/tm-build && git init -q
+printf 'def add(a, b):\n    return a - b\n' > calc.py
+git add -A && git commit -qm "start"
+```
+
+| ID | Steps | Expect |
+|---|---|---|
+| Q1 | `tm build "add() in calc.py subtracts instead of adding. Fix it and add tests"` | You see each action (🔍 read, ✏️ write, ▶ run). "Checking it myself: ..." then ✅ Passed, a summary, and "Keep it?". Press Enter: "Kept on master/main". `cat calc.py` shows `a + b`; `git log --oneline` shows one new commit; `git branch` shows no `tm/...` branch left |
+| Q2 | `printf '# my note\n' >> calc.py`, then `tm build "anything"` | Stops: "changes that aren't committed yet". Undo with `git checkout calc.py` |
+| Q3 | `tm build "add a multiply function with tests"`, and at "Keep it?" answer **n**, then **y** to "Throw the work away?" | "Thrown away"; `git log` and `git branch` are as before |
+| Q4 | Same as Q3, but answer **n** twice | "Left on branch tm/..."; `git diff master...tm/<name>` shows the work. Clean up: `git branch -D tm/<name>` |
+| Q5 | `tm build "delete calc.py and write it again from scratch"` | If the AI wants `rm calc.py`, you're asked first ("it deletes files. Allow?"); answer n and it finds another way |
+| Q6 | `cd ~ && tm build --new ~/tm-shop --simple "Meri dukaan ke liye billing program: item, price, quantity, aur 18% GST ke saath bill"` (try `tm me --language hinglish` first) | A new folder with the program and tests; the summary is in plain words (and Hinglish) and says exactly how to run it. Run it the way it says: does it work? |
+| Q7 | Plan first: in ~/tm-build, `tm add "add a divide function that refuses division by zero"`, `tm go <id>`, then `tm build <id>` | The build follows the plan; when kept, `tm show <id>` shows every step ticked and the task done |
+| Q8 | Try it on a real project of yours, with a small real task | Honest question: did you keep the result? How long did it take? Was anything wrong? (This is the most useful feedback of all) |
+
 ## J. Automatic checks (optional, any time)
 
 ```sh
 cd /home/user/kartik/folder
-python3 -m unittest discover -s tests     # expect: OK (123+ tests)
+python3 -m unittest discover -s tests     # expect: OK (248+ tests)
 python3 tests/live_smoke.py               # expect: 50/50 passed (uses ~60-90k tokens)
 ```
 

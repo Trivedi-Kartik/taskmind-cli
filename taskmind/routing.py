@@ -8,11 +8,12 @@ provider and nothing already done is lost.
 from taskmind import config
 from taskmind.llm import LLMError, from_settings
 
-STAGES = ["clarify", "analyze", "plan", "verify", "sync", "today", "ask", "do"]
+STAGES = ["clarify", "analyze", "plan", "build", "verify", "sync", "today", "ask", "do"]
 STAGE_HELP = {
     "clarify": "questions and task definition",
     "analyze": "code analysis and security check",
     "plan": "subtasks and test cases",
+    "build": "writing, running and fixing the code (`tm build`)",
     "verify": "checking written code against the plan",
     "sync": "matching commits to subtasks (`tm sync --ai`)",
     "today": "morning briefing (`tm today --ai`)",

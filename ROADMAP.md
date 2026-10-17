@@ -1,64 +1,61 @@
 # TaskMind roadmap
 
-Where TaskMind stands, and what it takes to go from "works well for me" to "a product
-other people rely on". Updated 2026-10-17.
+Updated 2026-10-17.
 
-## Where it stands today: a strong alpha
+## The direction
 
-**Ready:** the full task flow (capture → clarify → analyze code → plan → hand off → track →
-verify), security check, independent review, automatic failover across 7 AI providers,
-natural-language requests (`tm "..."`), voice (`tm talk`), reminders, calendar, help that
-works offline, secret protection, daily backups, profile, greeting and suggestions.
-220 automated tests (on Python 3.9–3.13), a live end-to-end test, and an independent code review behind it.
+TaskMind **builds the task**, and proves it works. One engine (`tm build`) serves two kinds
+of people:
 
-**Not yet ready for strangers:** it's installed by cloning a folder, it has only been
-used on small demo projects and one Linux laptop, and nobody but its creator has used it.
-The AI's judgment varies between runs, and we don't yet *measure* how good its plans are.
+- **Teams and developers:** a task goes in, and a tested change comes out, saved on a safe branch.
+  It works with free models or any AI you have, with TaskMind's own test run as the
+  judge of "done".
+- **People who can't code (India first):** describe the app in Hindi, Hinglish or English,
+  and get a working program, explained in plain words.
 
-| Who | Ready? | What's missing |
-|---|---|---|
-| You | Yes | - |
-| A developer teammate | Almost | Easy install, testing on their OS, a way to send feedback (Phase 1) |
-| The public | Not yet | Quality measured on real projects, Mac/Windows, performance on large repos, a home page (Phase 2) |
-| Non-technical relatives | No | They won't use a terminal: needs an app, web or WhatsApp interface (Phase 3) |
+What's measured from now on is **whether real tasks get done**, graded by checks the AI never sees
+(the scoreboard below), not only how many unit tests pass.
 
-## Phase 1: ready for teammates
+## Step 1: the engine (now)
 
-- [x] Secrets never sent to the AI (secret files hidden, values redacted)
-- [x] Data safety: daily backups, restore, export, safe concurrent use
-- [x] Getting to know the user: profile, daily greeting, suggestions, weekly summary
-- [x] **Easy install:** `pipx install taskmind-cli` (the name `taskmind` is taken on PyPI), or the single file `taskmind.pyz`; tested with a real install in a clean container
-- [x] **Works on Python 3.9 to 3.13** (it didn't start on 3.9–3.11 before; found and fixed by testing each version)
-- [ ] Publish to PyPI (needs your PyPI account) and check for updates in `tm --version`
-- [x] **Automatic tests on Linux, macOS and Windows** ready in `.github/workflows/ci.yml` (starts running once the project is on GitHub)
-- [x] **`tm feedback` / `tm report-bug`**, and a friendly message (with the details saved) instead of a Python crash
-- [x] `tm report-bug` and `tm feedback` open prefilled issues on github.com/Trivedi-Kartik/taskmind-cli
-- [x] **Clearer consent:** asked once per project, naming the AI provider
-- [x] **Split `cli.py`** into topic modules (core, parsing, display, personal, planner); checked with pyflakes
-- [x] Learn from your edits: plans the way you like (fewer steps, steps you always add)
-- [x] On GitHub: github.com/Trivedi-Kartik/taskmind-cli (tests run on every push)
-- [ ] Give it to 2–3 developer teammates
+- [x] `tm build`: writes and edits files, runs commands, writes tests, fixes failures
+- [x] Safe by design: a work branch, risky commands need a yes, dangerous ones never run,
+      keys hidden from commands, secret files never committed, uncommitted work never mixed in
+- [x] Done means proven: TaskMind runs the check itself; up to 3 fix rounds; a warning when
+      existing tests were changed; the AI can't swap in an easier check
+- [x] One command: Enter keeps it (merge + tidy up); planned tasks tick their steps off
+- [x] New projects (`--new`), plain-language and Hinglish summaries, voice input
+- [x] First honest scoreboard on real tasks (see README)
+- [ ] Scoreboard to 20 tasks across Python, JavaScript, web pages, small bug fixes in real
+      open-source projects; the same tasks run with Claude Code for comparison
+- [ ] Faster on free tiers: send less per step, and reuse what was read
 
-## Phase 2: public beta
+## Step 2: real users (the next 4 weeks)
 
-- [ ] **Measure quality:** a test set of 20–30 real tasks on real open-source projects, with the expected files and risks, scored automatically, so every change and every model can be compared on facts instead of impressions
-- [ ] **Large projects:** a cached code index for fast search in big repos (thousands of files)
-- [ ] **Speed:** measure the time for each command; reuse work across runs
-- [ ] macOS and Windows fully supported (recording, notifications, reminders)
-- [x] A LICENSE (MIT) and a public GitHub repo
-- [ ] A simple home page and a short demo video
-- [ ] Release notes and versioning
+- [ ] 5 developers from different small teams use `tm build` on real work for a week. Measure:
+      how many results they kept
+- [ ] 5 people who don't code try `tm build --new` with someone watching. Measure: did they get
+      a program they use?
+- [ ] Fix whatever stops them. Decide the main audience from what they *do*, not what they say
 
-## Phase 3: product
+## Step 3: the front doors
 
-- [ ] Optional sync across devices (the first feature that needs an account; it could be the paid plan)
-- [ ] Team features: shared tasks, assigning work, a team view
-- [ ] A non-developer interface: mobile, web or WhatsApp, on the same engine
-- [ ] Integrations: GitHub/GitLab issues both ways, Jira/Linear, Slack, live Google Calendar sync
+- [ ] **For non-coders:** they won't open a terminal. A simple web page or WhatsApp chat on the
+      same engine, with the built app running somewhere they can open (a link)
+- [ ] **For teams:** GitHub issue in → pull request out (`tm build` on an issue, then a PR
+      with the test results), so the whole team can use it without installing anything
+- [ ] Publish to PyPI (`pipx install taskmind-cli`), release notes, a short demo video
+
+## Already done (foundations)
+
+Planning (`tm go`: questions, code reading, security check, steps), independent review
+(`tm verify`), automatic failover across 7 AI providers, natural-language commands,
+voice, reminders, calendar, secret protection, daily backups, profile, tests on
+Linux, macOS and Windows with Python 3.9 to 3.13, MIT license.
 
 ## Principles that stay
 
 - Free to run: users bring their own AI keys; nothing paid is required.
 - Local and private by default: tasks, keys and history stay on the user's computer.
-- The AI proposes, the code does: anything that must always be correct is plain code.
-- The process, not the model, sets the quality bar.
+- The AI proposes, the code enforces: safety rules, git and the final check are plain code.
+- Judged by results: a feature counts when real tasks get done with it.

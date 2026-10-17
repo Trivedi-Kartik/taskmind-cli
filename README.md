@@ -1,91 +1,83 @@
 # TaskMind
 
-**The planning and quality layer above your AI coders.**
+**Say what you want built. TaskMind builds it, tests it, and proves it works.**
 
-TaskMind is a personal task agent for developers that runs in your terminal. Give
-it a task and it:
+```sh
+cd ~/code/my-app
+tm build "add a CSV export to the reports page"
+```
 
-1. asks the clarifying questions you would otherwise forget,
-2. reads your codebase to find affected files, edge cases and risks,
-3. runs the same security check on every change,
-4. breaks the work into small subtasks with test cases,
-5. hands each subtask to Claude Code, Cursor or Codex as a ready-made prompt,
-6. tracks progress from your git commits,
-7. and finally **verifies** the code that was written against the plan.
+TaskMind reads your project, writes the code and its tests, runs them, fixes what
+fails, and saves the work on a separate git branch. Then it **runs the tests itself**:
+a task is only "done" when they pass, not when the AI says so. Press Enter to keep the
+result; your own branch is untouched until you do.
 
-It also handles everyday tasks (errands, trips, admin, learning) in plain language,
-with reminders and calendar export: see [Everyday tasks](#everyday-tasks-and-simple-mode).
+Can't code? Describe the app, in English, Hindi or Hinglish, and TaskMind makes a new project for it:
+
+```sh
+tm build --new my-shop --simple "Meri dukaan ke liye billing program: item, price, quantity, aur 18% GST ke saath bill"
+```
+
+It works with free AI (Groq's free tier by default) or any provider you have a key
+for, and switches to a backup AI on its own when one hits its limit.
+
+### What makes it different
+
+| | |
+|---|---|
+| **Proof, not promises** | TaskMind runs the tests itself after the AI says it's finished. If they fail, the errors go back to the AI to fix (up to 3 rounds). If the AI changed tests that already existed, you're told to look before keeping. |
+| **Safe by default** | The work happens on its own branch. Installs, deletions and network commands need your yes; `sudo`, wiping folders and `git push` never run. Your API keys are hidden from the commands the AI runs, and secret files are never read, sent or committed. |
+| **Any AI, including free** | Groq, Gemini, OpenRouter, Ollama (local), OpenAI, Claude. When one fails or runs out, the build continues on the next. |
+| **Your language** | Explanations in plain words for non-programmers, in English, Hindi or Hinglish; say the task out loud with `--voice`. |
+| **Bigger work, planned first** | For a large task, `tm go` asks the right questions, reads the code, runs a security check and makes a step-by-step plan; `tm build <task number>` then builds the whole plan. |
 
 ### TaskMind in 2 minutes
 
-TaskMind is a **to-do list that thinks**. Every command starts with `tm`. A task goes
-through four phases:
-
-```
-1. WRITE IT DOWN  →  2. THINK IT THROUGH  →  3. DO IT  →  4. CHECK IT
-   tm add             tm go                  tm prompt     tm verify
-                                             tm done
-```
+Every command starts with `tm`.
 
 | Command | In plain words | Example |
 |---|---|---|
-| `tm add "..."` | Write a task down. It gets a number (1, 2, 3 ...). No AI yet | `tm add "Fix the login bug"` → task 1 |
+| `tm build "..."` | **Build it**: write the code and tests, run them, fix them, save the work | `tm build "add a dark mode toggle"` |
+| `tm build --new FOLDER "..."` | Make a brand-new project | `tm build --new todo-app "a to-do list in the terminal"` |
+| `tm add "..."` | Write a task down for later. It gets a number (1, 2, 3 ...) | `tm add "Fix the login bug"` → task 1 |
+| `tm go 1` | Think task 1 through: questions, code reading, risks, a step-by-step plan | `tm go 1` |
+| `tm build 1` | Build task 1, following its plan | `tm build 1` |
 | `tm list` | Show my to-do list | `tm list` |
-| `tm show 1` | Everything about task 1 | `tm show 1` |
-| `tm go 1` | Think task 1 through: the AI asks questions, reads your code and makes a step-by-step plan (steps 1.1, 1.2 ...) | `tm go 1` |
-| `tm prompt 1.1` | Instructions for task 1, step 1, ready to paste into Claude Code or Cursor | `tm prompt 1.1` |
-| `tm done 1.1` | Tick off task 1, step 1 | `tm done 1.1` |
-| `tm sync` | Tick steps off automatically from git commits that mention them (`TM-1.1`) | `tm sync` |
-| `tm verify 1` | The AI checks the finished code against the plan | `tm verify 1` |
+| `tm verify 1` | A second AI checks the finished code against the plan | `tm verify 1` |
 | `tm today` | What should I do today? | `tm today` |
-| `tm ask "..."` | Ask anything about using TaskMind or your tasks, in your own words | `tm ask "how do I set a reminder?"` |
-| `tm "..."` | **Just say what you want**: TaskMind works out the commands, shows them, and runs them after you agree | `tm "remind me about the CSV task tomorrow at 9"` |
+| `tm ask "..."` | Ask anything about using TaskMind, in your own words | `tm ask "how do I set a reminder?"` |
+| `tm "..."` | **Just say what you want**: TaskMind works out its own commands and runs them after you agree | `tm "remind me about the CSV task tomorrow at 9"` |
 
 **Numbers:** `1` is task 1, `1.2` is task 1 step 2, and `TM-1.2` is the same thing written
 in commit messages and on screen.
 
-**You don't have to write the steps.** Write the task in your own words, even roughly
-("login broken on mobile, fix it"). `tm go` asks what's missing, writes a clear
-description, reads the code and creates the steps. You can still add, change or remove
-steps yourself with `tm step` ([details](#your-own-steps)).
-
 **Stuck?** Ask in your own words: `tm ask "what do I do next on task 1?"`, or just
 `tm how do I add a task`. See [Getting help](#getting-help).
 
-```sh
-tm add "Add a dark mode button"      # → task 1
-tm go 1                              # questions, code reading, steps 1.1, 1.2, 1.3
-tm prompt 1.1                        # paste into Claude Code
-git commit -m "Add toggle TM-1.1"    # mention the step when you save code
-tm sync                              # step 1.1 ticked off
-tm verify 1                          # did we build everything the plan said?
-```
+**New?** Run `tm tutorial`: a guided 10-minute first task on a practice project. Typing
+just `tm` shows the overview.
 
-**New?** Run `tm tutorial`: a guided 10-minute first task on a practice project that
-explains every command before and after it runs. Typing just `tm` shows this overview.
+### Next to Claude Code, Codex or Cursor
 
-### Why use it next to Claude Code, Codex or Gemini CLI?
+Honestly: with a top paid model, those are stronger coding agents, and if you're
+happy with one, keep using it. TaskMind is for when you want:
 
-Those tools are excellent at *writing* code. TaskMind does not compete with them;
-it works with them.
+- to build with **free models** (or whichever AI you already pay for), without a subscription;
+- **proof**: a build counts as done only when TaskMind's own test run passes;
+- **one command**, safely on a branch, with nothing to approve except risky commands;
+- to describe the work **in your own language**, including people who don't program;
+- your tasks, plans and history to **stay yours**, on your computer, whichever AI you use.
 
-| | Coding CLIs | TaskMind |
-|---|---|---|
-| Where your work lives | In a chat session, tied to one company | In your tasks, on your machine. Survives limits, restarts and switching AI |
-| When the AI hits its limit | You wait | It continues on your next provider automatically |
-| Who checks the code | The same AI that wrote it | A **different** AI, for an independent second opinion |
-| Process | Depends on what you remember to ask | Same questions, security check and verification every time |
-| Cost | One subscription, one model for everything | Free models for simple steps, strong models only where they matter |
-| Voice | Dictate a prompt | Capture tasks, talk through the clarifying questions, hear your daily briefing |
-
-**The process, not the model, sets the quality bar.** Whichever AI (or person)
-writes the code, it is planned the same way and checked against what was agreed.
+It also works with them: `tm prompt` and `tm exec` hand a planned step to Claude Code,
+Cursor or Codex ([details](#working-with-claude-code-cursor-and-codex)).
 
 ---
+
 
 ## Contents
 
 - [TaskMind in 2 minutes](#taskmind-in-2-minutes)
+- [Build it: tm build](#build-it-tm-build)
 - [Install](#install)
 - [First-time setup](#first-time-setup)
 - [Your first task, step by step](#your-first-task-step-by-step)
@@ -114,6 +106,115 @@ writes the code, it is planned the same way and checked against what was agreed.
 - [Development](#development)
 
 ---
+
+## Build it: tm build
+
+```sh
+cd ~/code/my-app                       # your project (a git repo; commit your own changes first)
+tm build "let users reset their password by email"
+```
+
+What you see, step by step:
+
+```
+🔨 Building TM-4 in ~/code/my-app
+On a new branch, tm/let-users-reset-their-password: your main branch isn't touched until you keep the result.
+
+  🔍 list files .
+  🔍 read file app/auth.py
+  ✏️  app/auth.py
+  ✏️  tests/test_reset.py
+  ▶ python -m pytest -q
+    exit code 1                      ← the AI reads the errors and fixes them
+  ✏️  app/auth.py
+  ▶ python -m pytest -q
+    exit code 0
+
+Checking it myself: python -m pytest -q
+✅ Passed.
+
+✅ Done and checked: the tests pass.
+Added a reset-password flow ... (the AI's summary)
+Keep it (add it to your main branch)? [Y/n]
+```
+
+**How it works**
+
+1. **A safe branch.** TaskMind creates `tm/<task-name>` and works there. If the project
+   has changes you haven't committed, it stops and asks you to commit them first, so its
+   work never mixes with yours.
+2. **The AI works with tools:** it lists, searches and reads files, writes and edits
+   them, and runs commands (tests, scripts) in the project folder. You see every action.
+3. **The check.** When the AI says it's finished, TaskMind runs the test command itself.
+   Which command? Yours if you gave `--check`, otherwise the project's own (`npm test`,
+   `pytest`/`unittest`, `go test`, `cargo test`), otherwise the one the AI wrote tests for.
+   The AI can't swap in an easier check than yours or the project's.
+4. **Fix rounds.** If the check fails, the errors go back to the AI (up to 3 rounds).
+5. **Saved and kept.** The work is committed on the branch (secret files like `.env` are
+   never committed). Enter merges it into your branch and removes the work branch. Say no
+   and you can throw it away, or leave it on its branch to look at
+   (`git diff main...tm/<name>`).
+
+**The result, honestly**
+
+| You see | It means |
+|---|---|
+| ✅ Done and checked | TaskMind's own test run passed. The task is marked done |
+| ❌ Not done | The tests still fail after the fix rounds; the last errors are shown. Keeping it is your choice (the default is no) |
+| 🟡 Built, but not proven | There was nothing to run (no tests). Look at it before keeping it |
+| 🟡 Not finished | The AI ran out of steps. The work so far is saved on its branch |
+
+**Commands the AI may run**
+
+| Kind | Examples | What happens |
+|---|---|---|
+| Normal | tests, scripts, linters, `git status`, `git diff` | Runs |
+| Risky | installing packages, deleting files, internet access, `docker`, stopping programs | Asks you first (`--yes` allows them) |
+| Never | `sudo`, deleting outside the project, `git push`/`commit`/`checkout`/`reset`, piping a download into a shell, erasing disks, shutting down | Refused; the AI is told to find another way |
+
+Every command runs in the project folder with no keyboard input and a 5-minute limit
+(servers and watchers are stopped, so the AI is told to prove things with tests). Your
+API keys, tokens and passwords are removed from the environment the commands see.
+
+**Options**
+
+| Option | What it does |
+|---|---|
+| `tm build "..."` | Build it in the current folder |
+| `tm build 3` | Build task 3, using its description, definition and plan (`tm go 3` first for a big task) |
+| `--new FOLDER` | Start a new project in that folder (it gets its own git history) |
+| `--check "COMMAND"` | The command that proves it works, e.g. `--check "pytest tests/test_export.py"` |
+| `--simple` | Explain the result without technical words (on automatically in simple mode) |
+| `--voice` | Say what to build |
+| `-y`, `--yes` | Allow risky commands without asking, and keep the result if the tests pass. For scripts |
+
+The summary is written in your language: set it with `tm me --language hinglish`
+(or `hindi`, `english`).
+
+**Which AI builds?** The same providers and backups as everything else; to use a
+specific one just for building: `tm config --stage build=gemini` (see
+[A different AI for each stage](#a-different-ai-for-each-stage)).
+
+**How well does it work? The honest scoreboard**
+
+Real tasks, run live on Groq's **free** models (`openai/gpt-oss-120b`, with `gpt-oss-20b` as
+backup), each graded by a hidden check that the AI never saw (2026-10-17):
+
+| Task | Who it's for | TaskMind said | Hidden check | Time |
+|---|---|---|---|---|
+| Add a command-line interface (add / done / list, clear error for a wrong id) to a Python to-do app | Developer, new feature | ✅ Done and checked | ✅ Pass | 3 min |
+| Fix a slugify bug: repeated dashes, dashes at the ends, accented letters | Developer, bug fix | ✅ Done and checked | ✅ Pass | 1.5 min |
+| Write `parseDuration("1h30m")` in JavaScript, with errors for bad input, and tests | Developer, new code (JS) | ✅ Done and checked | ✅ Pass | 1 min |
+| "Meri dukaan ke liye billing program..." (Hinglish, new project, `--simple`) | Someone who can't code | ✅ Done and checked; explained in Hinglish | ✅ Correct bill and GST (checked by hand) | 1.5 min |
+
+What this does **not** show yet: big real-world projects, and how it compares with Claude
+Code on the same tasks. Those are next ([ROADMAP](ROADMAP.md)). One thing found by running
+it for real: a free model sometimes "finishes" by writing text instead of calling the
+finish tool, and TaskMind used to report that as unfinished. Now the tests decide.
+
+Free tiers are slower than paid models: Groq's free tier allows 8,000 tokens a minute, so
+TaskMind sometimes waits for the next minute. A paid or roomier model (Gemini's free tier,
+OpenRouter, Claude) is faster on big tasks.
 
 ## Install
 
@@ -284,6 +385,7 @@ Run `tm <command> --help` for details.
 
 | Command | What it does |
 |---|---|
+| `tm build "..." \| <id> [--new FOLDER] [--check CMD] [--simple] [--voice] [-y]` | [Build it](#build-it-tm-build): write the code and tests, run and fix them, save the work on a branch |
 | `tm prompt <ref> [--print] [-o FILE]` | Copy a hand-off prompt to the clipboard (or print / save it) |
 | `tm exec <ref> [--tool claude\|cursor\|codex] [-y]` | Launch that coding agent in the repo with the prompt (asks first) |
 | `tm step add <id> "title" [-d details]` | Add your own step (works with or without an AI plan) |
@@ -846,7 +948,7 @@ Environment variables: `GROQ_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`,
 ## Development
 
 ```sh
-python3 -m unittest discover -s tests     # 220 unit tests, no AI calls, no dependencies
+python3 -m unittest discover -s tests     # 248 unit tests, no AI calls, no dependencies
 python3 tests/live_smoke.py               # every command end to end, with your real AI provider
 python3 tests/live_smoke.py --no-ai       # the same, skipping AI calls
 ```
