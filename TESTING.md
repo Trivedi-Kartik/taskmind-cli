@@ -255,6 +255,10 @@ git add -A && git commit -qm "start"
 | Q5 | `tm build "delete calc.py and write it again from scratch"` | If the AI wants `rm calc.py`, you're asked first ("it deletes files. Allow?"); answer n and it finds another way |
 | Q6 | `cd ~ && tm build --new ~/tm-shop --simple "Meri dukaan ke liye billing program: item, price, quantity, aur 18% GST ke saath bill"` (try `tm me --language hinglish` first) | A new folder with the program and tests; the summary is in plain words (and Hinglish) and says exactly how to run it. Run it the way it says: does it work? |
 | Q7 | Plan first: in ~/tm-build, `tm add "add a divide function that refuses division by zero"`, `tm go <id>`, then `tm build <id>` | The build follows the plan; when kept, `tm show <id>` shows every step ticked and the task done |
+| Q9 | In ~/tm-build: `tm build --undo` (right after a kept build) | "Undone": the change is gone from your branch, and `git branch` shows `tm/undone-...` holding it |
+| Q10 | Make a build fail or stop (Ctrl+C during a build), then run `tm build "anything"` | It says the folder is still on an unfinished build and offers to throw it away (no git error) |
+| Q11 | Edit a file without committing, then `tm build "anything"` | It lists your change and offers to save it for you; answer y and the build goes ahead |
+| Q12 | `cd ~/tm-tests && tm build --new page-test "a one-page site with a button that counts clicks"` | The output shows "open the page in a hidden browser" and "Checked by TaskMind: ... browser check" |
 | Q8 | Try it on a real project of yours, with a small real task | Honest question: did you keep the result? How long did it take? Was anything wrong? (This is the most useful feedback of all) |
 
 ## J. Automatic checks (optional, any time)

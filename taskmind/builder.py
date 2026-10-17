@@ -24,6 +24,7 @@ from taskmind.agent import TRIMMED
 from taskmind.llm import LLMError, RequestTooLarge, ToolCallError
 from taskmind.repo_tools import TOOL_SPECS as READ_TOOLS
 from taskmind.repo_tools import Repo, dispatch
+from taskmind import webcheck
 from taskmind.secrets import is_secret_file, redact
 
 MAX_OUTPUT = 2500
@@ -401,7 +402,7 @@ def _chat(llm, messages, budget, max_tokens):
 
 
 def build(llm, task, ws: Workspace, check="", max_steps=40, fix_rounds=3, language="auto", simple=False,
-          on_event=None, budget=None) -> dict:
+          on_event=None, budget=None, browser=None) -> dict:
     """Do the task in the workspace. Returns a report:
 
     status: "passed" (the check ran and passed), "failed" (the check kept failing),
@@ -417,7 +418,9 @@ def build(llm, task, ws: Workspace, check="", max_steps=40, fix_rounds=3, langua
     elif budget >= 30_000:
         ws.max_chars, ws.max_lines = 8000, 300
     known_check = check or detect_check(ws.root)
-    goal = f"Task: {task}\n\nProject folder: {ws.root.name}\n\n{_audience(language, simple)}"
+    goal = (f"Task: {task}\n\nYou are already inside the project's folder ({ws.root.name}); every path is "
+            f"relative to it. Put files here (e.g. index.html), not in a new {ws.root.name}/ subfolder.\n\n"
+            f"{_audience(language, simple)}")
     if known_check:
         goal += f"\n\nThe project's tests run with: {known_check}. They must pass when you finish."
     messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": goal}]
@@ -488,18 +491,37 @@ def build(llm, task, ws: Workspace, check="", max_steps=40, fix_rounds=3, langua
         # TaskMind's own detection comes before the AI's command: an AI command that finds no
         # tests (seen live: unittest exit code 5) sends it off "fixing" code that works.
         command = known_check or detect_check(ws.root) or str(finished.get("check_command") or "").strip()
-        if not command:
-            report["status"] = "unverified"
-            break
-        if command_risk(command)[0] != "ok":
+        web = webcheck.is_web_project(ws.root)
+        if command and command_risk(command)[0] != "ok":
             report.update(status="unverified", check=command,
                           check_output="TaskMind won't run this check by itself: " + command_risk(command)[1])
             break
-        report["check"] = command
-        event("check", command=command)
-        code, output = run_shell(command, ws.root, ws.timeout)
+        if not command and not web:
+            report["status"] = "unverified"
+            break
+        code, output, checks = 0, "", []
+        if command:
+            checks.append(command)
+            event("check", command=command)
+            code, output = run_shell(command, ws.root, ws.timeout)
+            event("checked", command=command, code=code, output=output)
+        if code == 0 and web:
+            # A test can pass while the page is broken (seen live: a test that only checked the
+            # files exist), so web pages are also opened in a real browser.
+            event("check", command="open the page in a hidden browser")
+            result = webcheck.check(ws.root, browser=browser)
+            checks.append("browser check" if result["browser"] else "file links (no browser found)")
+            if result["problems"]:
+                code, output = 1, "TaskMind checked the page and found:\n- " + "\n- ".join(result["problems"])
+            elif not result["browser"]:
+                report["note"] = ("No Chrome, Chromium or Edge was found, so the page wasn't opened in a "
+                                  "browser; only its file links were checked.")
+                if not command:
+                    report.update(status="unverified", check=" + ".join(checks))
+                    break
+            event("checked", command=checks[-1], code=code, output=output)
+        report["check"] = " + ".join(checks)
         report["check_output"] = output
-        event("checked", command=command, code=code, output=output)
         if code == 0:
             report["status"] = "passed"
             break
@@ -507,7 +529,7 @@ def build(llm, task, ws: Workspace, check="", max_steps=40, fix_rounds=3, langua
         if report["rounds"] > fix_rounds:
             report["status"] = "failed"
             break
-        messages[-1]["content"] = (f"Not done: TaskMind ran `{command}` and it failed (exit code {code}):\n"
+        messages[-1]["content"] = (f"Not done: TaskMind ran `{report['check']}` and it failed (exit code {code}):\n"
                                    f"{output}\n\nFix the code (not the tests, unless they are wrong), "
                                    "run the tests, then call finish again.")
     report["changed"] = sorted(ws.changed)
@@ -585,8 +607,80 @@ def start_branch(root, task, new_project=False) -> tuple:
     name, n = f"tm/{slug(task)}", 2
     while name in existing:
         name, n = f"tm/{slug(task)}-{n}", n + 1
+    start = git(root, "rev-parse", "HEAD")
     git(root, "checkout", "-q", "-b", name)
+    _save_state(root, {"base": base, "branch": name, "start": start, "kept": False, "task": task})
     return base, name
+
+
+# What the last build did, so `tm build --undo` can take it back without the user knowing git.
+
+def _state_file(root) -> Path:
+    return Path(git(root, "rev-parse", "--absolute-git-dir")) / "taskmind-build.json"
+
+
+def _save_state(root, state):
+    _state_file(root).write_text(json.dumps(state), encoding="utf-8")
+
+
+def last_build(root):
+    """The last build's record ({base, branch, start, kept, task}), or None."""
+    if not is_project(root):
+        return None
+    try:
+        return json.loads(_state_file(root).read_text(encoding="utf-8"))
+    except (OSError, ValueError, GitError):
+        return None
+
+
+def current_branch(root) -> str:
+    return git(root, "rev-parse", "--abbrev-ref", "HEAD")
+
+
+def changed_files(root) -> list:
+    """Uncommitted changes, as git shows them ("M app.py", "?? new.txt")."""
+    return [line.strip() for line in git(root, "status", "--porcelain").splitlines() if line.strip()]
+
+
+def save_users_changes(root):
+    git(root, "add", "-A")
+    _commit(root, "-m", "Saved before a TaskMind build")
+
+
+def leftover_build(root):
+    """The record of an unfinished build whose branch the folder is still on, or None."""
+    state = last_build(root)
+    if state and not state.get("kept") and current_branch(root) == state["branch"]:
+        return state
+    return None
+
+
+def undo(root) -> str:
+    """Take back the last build. Returns what was done, in plain words."""
+    state = last_build(root)
+    if not state:
+        raise GitError("There's no TaskMind build to undo in this folder.")
+    base, branch = state["base"], state["branch"]
+    if not state.get("kept"):
+        git(root, "checkout", "-q", "-f", base)
+        git(root, "branch", "-q", "-D", branch, check=False)
+        _state_file(root).unlink()
+        return f"Threw away the unfinished build. The folder is back to how it was (branch {base})."
+    if current_branch(root) != base or git(root, "rev-parse", "HEAD") != state.get("merged"):
+        raise GitError("You've changed things since that build, so undoing it now could lose your work. "
+                       "Undo it by hand with git, or ask for help.")
+    if changed_files(root):
+        raise GitError("There are unsaved changes in this folder. Commit them first, then undo.")
+    backup = f"tm/undone-{slug(state.get('task') or 'build', 30)}"
+    existing = set(git(root, "branch", "--format=%(refname:short)").split())
+    n = 2
+    while backup in existing:
+        backup, n = f"tm/undone-{slug(state.get('task') or 'build', 30)}-{n}", n + 1
+    git(root, "branch", backup)
+    git(root, "reset", "-q", "--hard", state["start"])
+    _state_file(root).unlink()
+    return (f"Undone: {base} is back to how it was before the build. The build is kept on branch "
+            f"{backup} in case you want it back (git merge {backup}).")
 
 
 def save_work(root, message) -> list:
@@ -607,8 +701,14 @@ def keep(root, base, branch):
     git(root, "checkout", "-q", base)
     git(root, "merge", "-q", "--ff-only", branch)
     git(root, "branch", "-q", "-d", branch)
+    state = last_build(root) or {"base": base, "branch": branch}
+    _save_state(root, {**state, "kept": True, "merged": git(root, "rev-parse", "HEAD")})
 
 
 def discard(root, base, branch):
     git(root, "checkout", "-q", "-f", base)
     git(root, "branch", "-q", "-D", branch)
+    try:
+        _state_file(root).unlink()
+    except (OSError, GitError):
+        pass

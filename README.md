@@ -133,7 +133,8 @@ On a new branch, tm/let-users-reset-their-password: your main branch isn't touch
 Checking it myself: python -m pytest -q
 ✅ Passed.
 
-✅ Done and checked: the tests pass.
+✅ Done and checked.
+Checked by TaskMind: python -m pytest -q
 Added a reset-password flow ... (the AI's summary)
 Keep it (add it to your main branch)? [Y/n]
 ```
@@ -152,6 +153,11 @@ Keep it (add it to your main branch)? [Y/n]
    Which command? Yours if you gave `--check`, otherwise the project's own (`npm test`,
    `pytest`/`unittest`, `go test`, `cargo test`), otherwise the one the AI wrote tests for.
    The AI can't swap in an easier check than yours or the project's.
+   **Web pages are also opened in a hidden browser** (Chrome, Chromium or Edge, if installed):
+   JavaScript errors, links to files that don't exist, or a blank page count as failures and go
+   back to the AI, even if its own test passed. (A test that only checks the files exist proves
+   nothing about the page.) Without a browser, only the file links are checked, and a page
+   with no other test is reported as not proven.
 5. **Fix rounds.** If the check fails, the errors go back to the AI (up to 3 rounds).
 6. **Saved and kept.** The work is committed on the branch (secret files like `.env` are
    never committed). Enter merges it into your branch and removes the work branch. Say no
@@ -162,7 +168,7 @@ Keep it (add it to your main branch)? [Y/n]
 
 | You see | It means |
 |---|---|
-| ✅ Done and checked | TaskMind's own test run passed. The task is marked done |
+| ✅ Done and checked | TaskMind's own checks passed (shown under "Checked by TaskMind"). The task is marked done |
 | ❌ Not done | The tests still fail after the fix rounds; the last errors are shown. Keeping it is your choice (the default is no) |
 | 🟡 Built, but not proven | There was nothing to run (no tests). Look at it before keeping it |
 | 🟡 Not finished | The AI ran out of steps. The work so far is saved on its branch |
@@ -191,6 +197,12 @@ API keys, tokens and passwords are removed from the environment the commands see
 | `--simple` | Explain the result without technical words (on automatically in simple mode) |
 | `--voice` | Say what to build |
 | `-y`, `--yes` | Allow risky commands without asking, and keep the result if the tests pass. For scripts |
+| `tm build --undo` | Take back the last build in this folder: an unfinished one is thrown away; a kept one is taken out of your branch and set aside on a `tm/undone-...` branch, so nothing is lost |
+
+**No git knowledge needed.** If the project has changes you haven't saved in git, TaskMind
+lists them and offers to save them for you (one commit) before it starts. If the folder is still
+on an unfinished build, it says so and offers to throw that build away. Changed your mind after
+keeping a build? `tm build --undo`.
 
 The summary is written in your language: set it with `tm me --language hinglish`
 (or `hindi`, `english`).
@@ -960,7 +972,7 @@ Environment variables: `GROQ_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`,
 ## Development
 
 ```sh
-python3 -m unittest discover -s tests     # 263 unit tests, no AI calls, no dependencies
+python3 -m unittest discover -s tests     # 284 unit tests, no AI calls, no dependencies
 python3 tests/live_smoke.py               # every command end to end, with your real AI provider
 python3 tests/live_smoke.py --no-ai       # the same, skipping AI calls
 ```

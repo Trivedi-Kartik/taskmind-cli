@@ -2624,7 +2624,8 @@ class TestBuildCLI(TestCLI):
         (self.root / "calc.py").write_text("# my unsaved change\n", encoding="utf-8")
         code, out = self.run_cli("build", "Fix add", "--yes", llm=self.fixing_llm())
         self.assertEqual(code, 1)
-        self.assertIn("aren't committed", out)
+        self.assertIn("aren't saved in git", out)
+        self.assertIn("M calc.py", out)
 
     def test_secret_files_are_never_committed(self):
         llm = FakeLLM(tool_call("write_file", path=".env", content="KEY=1\n"),
@@ -2694,3 +2695,159 @@ class TestBuildOutsideAProject(TestCLI):
                          "static-website-coffice")
         self.assertEqual(project_name("Mujhe ek billing program chahiye"), "billing-program")
         self.assertEqual(project_name("please make a"), "my-project")
+
+
+
+# Web pages are checked in a real browser; builds can be undone without knowing git
+
+PAGE = "<!doctype html><html><head><link rel='stylesheet' href='styles.css'></head><body><h1>Cafe</h1></body></html>"
+
+
+class TestWebCheck(unittest.TestCase):
+    def test_missing_links_found_without_a_browser(self):
+        from taskmind import webcheck
+        with TempDir() as tmp:
+            root = Path(tmp)
+            (root / "index.html").write_text(PAGE.replace("<h1>", "<img src='logo.svg'><a href='x.html'>x</a><h1>"),
+                                             encoding="utf-8")
+            (root / "test.html").write_text("not a page", encoding="utf-8")
+            result = webcheck.check(root, browser=False)
+        self.assertEqual(result["pages"], ["index.html"])  # test pages aren't the product
+        self.assertFalse(result["browser"])
+        self.assertEqual(sorted(result["problems"]), ["index.html links to logo.svg, which doesn't exist",
+                                                      "index.html links to styles.css, which doesn't exist"])
+
+    def test_pages_one_folder_down_are_found(self):
+        from taskmind import webcheck
+        with TempDir() as tmp:
+            root = Path(tmp)
+            (root / "site").mkdir()
+            (root / "site" / "index.html").write_text(PAGE.replace("styles.css", "#"), encoding="utf-8")
+            (root / "node_modules").mkdir()
+            (root / "node_modules" / "x.html").write_text("x", encoding="utf-8")
+            self.assertEqual(webcheck.check(root, browser=False)["pages"], ["site/index.html"])
+
+    def test_browser_errors_and_empty_pages(self):
+        from taskmind import webcheck
+        stderr = ('[1:1:1017/1.1:INFO:CONSOLE:2] "ok", source: file:///p/index.html (2)\n'
+                  '[1:1:1017/1.1:INFO:CONSOLE:9] "Uncaught TypeError: x is null", source: file:///p/script.js (9)\n')
+        done = subprocess.CompletedProcess([], 0, stdout="<html><body><script>1</script></body></html>",
+                                           stderr=stderr)
+        with TempDir() as tmp:
+            root = Path(tmp)
+            (root / "index.html").write_text(PAGE, encoding="utf-8")
+            (root / "styles.css").write_text("", encoding="utf-8")
+            with mock.patch("subprocess.run", return_value=done):
+                result = webcheck.check(root, browser="chrome")
+        self.assertEqual(result["problems"], [
+            "index.html: JavaScript error: Uncaught TypeError: x is null (script.js line 9)",
+            "index.html shows no text when opened in a browser"])
+
+
+class TestWebBuild(unittest.TestCase):
+    def ws(self, tmp):
+        from taskmind.builder import Workspace
+        return Workspace(build_repo(Path(tmp) / "p"))
+
+    def test_a_passing_test_doesnt_hide_a_broken_page(self):
+        # Seen live: the AI's "test" only checked that the files exist.
+        from taskmind import webcheck
+        from taskmind.builder import build
+        files_exist = f"{PY} -c \"import os; assert os.path.exists('index.html')\""
+        llm = FakeLLM(tool_call("write_file", path="index.html", content=PAGE),
+                      tool_call("finish", summary="Site.", check_command=files_exist),
+                      tool_call("write_file", path="styles.css", content="h1 { color: brown }"),
+                      tool_call("finish", summary="Site.", check_command=files_exist))
+        with TempDir() as tmp, mock.patch.object(webcheck, "open_in_browser", return_value=([], "Cafe")):
+            report = build(llm, "Cafe site", self.ws(tmp), browser="chrome")
+        self.assertEqual(report["status"], "passed")
+        self.assertEqual(report["rounds"], 1)
+        self.assertIn("styles.css, which doesn't exist", llm.calls[2]["messages"][-1]["content"])
+        self.assertIn("browser check", report["check"])
+
+    def test_no_browser_and_no_test_is_not_proven(self):
+        from taskmind.builder import build
+        llm = FakeLLM(tool_call("write_file", path="index.html", content=PAGE.replace("styles.css", "#")),
+                      tool_call("finish", summary="Site.", check_command=""))
+        with TempDir() as tmp:
+            report = build(llm, "Cafe site", self.ws(tmp), browser=False)
+        self.assertEqual(report["status"], "unverified")
+        self.assertIn("No Chrome", report["note"])
+
+
+class TestUndoAndLeftovers(TestCLI):
+    def setUp(self):
+        super().setUp()
+        self.cwd = os.getcwd()
+        self.root = build_repo(Path(self.tmp.name) / "undoproj")
+        os.chdir(self.root)
+
+    def tearDown(self):
+        os.chdir(self.cwd)
+        super().tearDown()
+
+    def calc(self):
+        return (self.root / "calc.py").read_text(encoding="utf-8")
+
+    def branch(self):
+        return subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=self.root,
+                              capture_output=True, text=True).stdout.strip()
+
+    def fixing_llm(self):
+        return FakeLLM(tool_call("edit_file", path="calc.py", old="a - b", new="a + b"),
+                       tool_call("finish", summary="add() adds.", check_command=PASS_CHECK))
+
+    def test_undo_a_kept_build_keeps_it_aside(self):
+        self.run_cli("build", "Fix add", "--yes", llm=self.fixing_llm())
+        self.assertIn("a + b", self.calc())
+        code, out = self.run_cli("build", "--undo", "--yes")
+        self.assertEqual(code, 0, out)
+        self.assertIn("a - b", self.calc())
+        self.assertIn("tm/undone-fix-add", subprocess.run(["git", "branch"], cwd=self.root,
+                                                          capture_output=True, text=True).stdout)
+        code, out = self.run_cli("build", "--undo", "--yes")
+        self.assertEqual(code, 1)
+        self.assertIn("no TaskMind build to undo", out)
+
+    def test_undo_an_unfinished_build(self):
+        base = self.branch()
+        llm = FakeLLM(tool_call("edit_file", path="calc.py", old="a - b", new="a * b"),
+                      tool_call("finish", summary="Done.", check_command=PASS_CHECK),
+                      *[tool_call("finish", summary="Done.", check_command=PASS_CHECK)] * 3)
+        self.run_cli("build", "Fix add", "--yes", llm=llm)  # fails its check: left on its branch
+        self.assertNotEqual(self.branch(), base)
+        code, out = self.run_cli("build", "--undo", "--yes")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.branch(), base)
+        self.assertIn("a - b", self.calc())
+
+    def test_a_leftover_build_is_explained_not_a_git_error(self):
+        # Seen in real use: a failed build left the folder on its branch; the user deleted
+        # the files and got "changes that aren't committed" with no idea why.
+        llm = FakeLLM(tool_call("write_file", path="notes.md", content="x\n"),
+                      tool_call("finish", summary="Done.", check_command=""))
+        self.run_cli("build", "Write notes", "--yes", llm=llm)
+        (self.root / "notes.md").unlink()
+        code, out = self.run_cli("build", "Fix add", llm=self.fixing_llm())
+        self.assertEqual(code, 1)
+        self.assertIn("still on an unfinished build", out)
+        self.assertIn("tm build --undo", out)
+
+    def test_leftover_thrown_away_when_the_user_agrees(self):
+        llm = FakeLLM(tool_call("write_file", path="notes.md", content="x\n"),
+                      tool_call("finish", summary="Done.", check_command=""))
+        self.run_cli("build", "Write notes", "--yes", llm=llm)
+        with mock.patch.object(cli, "interactive", return_value=True):
+            code, out = self.run_cli("build", "Fix add", llm=self.fixing_llm(), stdin="y\ny\n")
+        self.assertEqual(code, 0, out)
+        self.assertIn("Thrown away", out)
+        self.assertFalse((self.root / "notes.md").exists())
+
+    def test_unsaved_changes_can_be_saved_for_the_user(self):
+        (self.root / "mine.txt").write_text("my work\n", encoding="utf-8")
+        with mock.patch.object(cli, "interactive", return_value=True):
+            code, out = self.run_cli("build", "Fix add", llm=self.fixing_llm(), stdin="y\ny\n")
+        self.assertEqual(code, 0, out)
+        self.assertIn("?? mine.txt", out)
+        log = subprocess.run(["git", "log", "--format=%s"], cwd=self.root, capture_output=True, text=True).stdout
+        self.assertIn("Saved before a TaskMind build", log)

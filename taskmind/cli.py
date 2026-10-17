@@ -1061,6 +1061,50 @@ def _new_project(name):
     return str(folder)
 
 
+def _undo_build(args):
+    from taskmind import builder
+    root = os.getcwd()
+    state = builder.last_build(root) if builder.is_project(root) else None
+    if not state:
+        raise CLIError("There's no TaskMind build to undo in this folder.")
+    what = ("throw away the unfinished build" if not state.get("kept")
+            else f"take the last build out of your {state['base']} branch (it's kept aside, so nothing is lost)")
+    ui.out(f"Last build: [bold]{ui.escape((state.get('task') or '')[:100])}[/bold]")
+    if not args.yes and not (interactive() and ui.confirm(f"Undo it? This will {what}.", default=True)):
+        ui.out("Nothing changed.")
+        return 1
+    try:
+        ui.out(f"[green]{ui.escape(builder.undo(root))}[/green]")
+    except builder.GitError as exc:
+        raise CLIError(str(exc)) from exc
+    return 0
+
+
+def _make_room_for_build(root):
+    """Unsaved changes would mix with the build's work. Sort them out with the user, in plain words."""
+    from taskmind import builder
+    leftover = builder.leftover_build(root)
+    if leftover:
+        ui.out(f"This folder is still on an unfinished build: [bold]{ui.escape(leftover['task'][:80])}[/bold]")
+        if interactive() and ui.confirm("Throw that earlier build away and start this one?", default=True):
+            builder.discard(root, leftover["base"], leftover["branch"])
+            ui.out("[dim]Thrown away.[/dim]")
+        else:
+            raise CLIError("Stopped. To throw the earlier build away: tm build --undo")
+    changes = builder.changed_files(root)
+    if not changes:
+        return
+    shown = "\n".join(f"  {c}" for c in changes[:8]) + (f"\n  ... and {len(changes) - 8} more" if len(changes) > 8 else "")
+    ui.out(f"This project has changes that aren't saved in git yet:\n{ui.escape(shown)}")
+    if interactive() and ui.confirm("Save them now (one git commit), so TaskMind's work stays separate "
+                                    "from yours?", default=True):
+        builder.save_users_changes(root)
+        ui.out("[dim]Saved.[/dim]")
+        return
+    raise CLIError("Stopped, so your changes don't mix with TaskMind's. Save them first "
+                   "(git add -A && git commit -m \"...\"), then run tm build again.")
+
+
 def _offer_new_folder(root, text, yes):
     """Outside a project (e.g. the home folder), build in a new folder rather than sweeping
     everything here into git. Returns the folder to create."""
@@ -1106,10 +1150,13 @@ def _show_build_event(kind, name=None, args=None, result=None, command=None, cod
             ui.out("[green]✅ Passed.[/green]")
         else:
             ui.out(f"[yellow]❌ Failed (exit code {code}). Sending the errors back to fix them...[/yellow]")
+            if output.startswith("TaskMind checked the page"):
+                for line in output.splitlines()[1:6]:
+                    ui.out(f"   [dim]{ui.escape(line[:160])}[/dim]")
 
 
 BUILD_RESULT = {
-    "passed": "[bold green]✅ Done and checked: the tests pass.[/bold green]",
+    "passed": "[bold green]✅ Done and checked.[/bold green]",
     "failed": "[bold red]❌ Not done: the tests still fail after several fixes.[/bold red]",
     "unverified": "[bold yellow]🟡 Built, but not proven: there's no test to run.[/bold yellow]",
     "unfinished": "[bold yellow]🟡 Not finished: the AI ran out of steps.[/bold yellow]",
@@ -1120,6 +1167,8 @@ BUILD_RESULT = {
 def cmd_build(args):
     from taskmind import builder
 
+    if args.undo:
+        return _undo_build(args)
     cfg = ensure_setup()
     db = open_db()
     text, title, root, task = _build_goal(db, args)
@@ -1127,6 +1176,8 @@ def cmd_build(args):
         args.new = _offer_new_folder(root, text, args.yes)
     if args.new:
         root = _new_project(args.new)
+    elif builder.is_project(root):
+        _make_room_for_build(root)
     try:
         base, branch = builder.start_branch(root, title, new_project=bool(args.new))
     except builder.GitError as exc:
@@ -1145,8 +1196,8 @@ def cmd_build(args):
            "until you keep the result.[/dim]\n")
 
     def leave_note():
-        ui.out(f"[dim]The work so far is on branch {ui.escape(branch)}. Back to yours: "
-               f"git checkout {ui.escape(base)}[/dim]")
+        ui.out(f"[dim]The work so far is on branch {ui.escape(branch)}. To throw it away and go back to how "
+               f"things were: tm build --undo[/dim]")
 
     profile = insights.profile(cfg)
     try:
@@ -1162,6 +1213,10 @@ def cmd_build(args):
     ui.out("\n" + BUILD_RESULT[report["status"]])
     if report.get("reason"):
         ui.out(ui.escape(report["reason"]))
+    if report["check"]:
+        ui.out(f"[dim]Checked by TaskMind: {ui.escape(report['check'][:200])}[/dim]")
+    if report.get("note"):
+        ui.out(f"[yellow]{ui.escape(report['note'])}[/yellow]")
     if report["summary"]:
         ui.out(ui.escape(report["summary"]))  # not markdown: it would swallow <placeholders>
     if files:
@@ -1568,6 +1623,8 @@ def build_parser():
     sp.add_argument("--simple", action="store_true", help="Explain the result without technical words")
     sp.add_argument("-y", "--yes", action="store_true", help="Allow installs and deletions without asking, "
                                                              "and keep the result if the tests pass")
+    sp.add_argument("--undo", action="store_true", help="Take back the last build in this folder "
+                                                         "(kept or not); nothing else is touched")
     sp.add_argument("--max-steps", type=int, default=40, help=argparse.SUPPRESS)
     sp = add("step", cmd_step, "Add, edit, remove or list a task's steps yourself")
     sp.add_argument("action", choices=["add", "edit", "rm", "list", "show"])
