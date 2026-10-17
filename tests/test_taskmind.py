@@ -2287,6 +2287,31 @@ class TestModelChoiceRegressions(TestCLI):
         sleep.assert_not_called()
 
 
+class TestRealUseRegressions3(TestCLI):
+    def test_unquoted_words_after_a_command_dont_loop(self):
+        # Seen in real use: `tm config --model models/Gemini 3.1 Flash Lite` recursed until Python gave up.
+        code, out = self.run_cli("config", "--provider", "gemini", "--model", "models/Gemini", "3.1", "Flash", "Lite")
+        self.assertEqual(code, 2)
+        self.assertIn("doesn't understand: 3.1 Flash Lite", out)
+        self.assertNotIn("Traceback", out)
+
+    def test_website_model_names_become_api_ids(self):
+        models = ["models/gemini-3.1-flash-lite", "models/gemini-3.8-flash"]
+        with mock.patch.object(cli.llm_client.LLM, "list_models", return_value=models):
+            code, out = self.run_cli("config", "--provider", "gemini", "--model", "Gemini 3.1 Flash Lite")
+            self.assertEqual(code, 0, out)
+            from taskmind import config
+            self.assertEqual(config.load()["models"]["gemini"], "models/gemini-3.1-flash-lite")
+            code, out = self.run_cli("config", "--model", "gemini-9-ultra")
+        self.assertEqual(code, 1)
+        self.assertIn("doesn't offer a model called", out)
+
+    def test_gemini_says_how_long_to_wait(self):
+        from taskmind.llm import _retry_delay
+        self.assertEqual(_retry_delay(None, "Please retry in 23.4s.", 0), 23.9)
+        self.assertEqual(_retry_delay(None, '{"retryDelay": "41s"}', 0), 41.5)
+
+
 class TestBuildSafety(unittest.TestCase):
     def test_command_risk(self):
         from taskmind.builder import command_risk

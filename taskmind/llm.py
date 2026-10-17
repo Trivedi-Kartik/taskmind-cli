@@ -166,8 +166,10 @@ def _retry_delay(header, detail, attempt) -> float:
             return min(float(header), 60)
         except ValueError:
             pass
-    # Groq puts the wait in the message, e.g. "Please try again in 7.5s".
-    match = re.search(r"try again in (?:(\d+)m)?([\d.]+)s", detail)
+    # Groq puts the wait in the message ("Please try again in 7.5s"); Gemini says
+    # "Please retry in 23.4s" and adds "retryDelay": "23s".
+    match = re.search(r"(?:try again|retry) in (?:(\d+)m)?([\d.]+)s", detail) or \
+        re.search(r'"retryDelay":\s*"()([\d.]+)s"', detail)
     if match:
         return min(int(match.group(1) or 0) * 60 + float(match.group(2)) + 0.5, 60)
     return min(2 ** attempt * 2, 30)

@@ -972,7 +972,7 @@ Environment variables: `GROQ_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`,
 ## Development
 
 ```sh
-python3 -m unittest discover -s tests     # 284 unit tests, no AI calls, no dependencies
+python3 -m unittest discover -s tests     # 291 unit tests, no AI calls, no dependencies
 python3 tests/live_smoke.py               # every command end to end, with your real AI provider
 python3 tests/live_smoke.py --no-ai       # the same, skipping AI calls
 ```

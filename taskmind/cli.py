@@ -743,6 +743,25 @@ def cmd_models(args):
            + f". Switch with `tm config --provider {s['provider']} --model <id>`.[/dim]")
 
 
+def _model_id(cfg, provider, name):
+    """Turn what a provider's website shows ("Gemini 3.1 Flash Lite") into the id its API needs
+    ("models/gemini-3.1-flash-lite"), and warn about names the provider doesn't offer."""
+    s = config.llm_settings(cfg, provider)
+    try:
+        available = llm_client.from_settings({**s, "model": name or "-"}).list_models()
+    except LLMError:
+        return name  # offline or no key yet: take it as given
+    if name in available:
+        return name
+    wanted = re.sub(r"[\s_]+", "-", name.strip().lower()).removeprefix("models/")
+    for model in available:
+        if model.lower().rsplit("/", 1)[-1] == wanted:
+            ui.out(f"[dim]Using the model id {ui.escape(model)} for '{ui.escape(name)}'.[/dim]")
+            return model
+    raise CLIError(f"{s['label']} doesn't offer a model called '{name}'. See the exact names with "
+                   f"`tm models --provider {provider}`.")
+
+
 def cmd_config(args):
     cfg = config.load()
     changed = False
@@ -755,7 +774,7 @@ def cmd_config(args):
         if args.model.strip().isdigit():
             raise CLIError(f"'{args.model}' looks like a number from a list, not a model name. Use the name "
                            f"`tm models` shows, e.g. tm config --model <name>.")
-        cfg["models"][provider], changed = args.model.strip(), True
+        cfg["models"][provider], changed = _model_id(cfg, provider, args.model.strip()), True
     if args.key:
         cfg["keys"][provider], changed = args.key, True
     if args.fallback is not None:
@@ -1728,7 +1747,10 @@ def _main(argv=None) -> int:
     try:
         args = parser.parse_args(argv)
     except UsageError as err:
-        if looks_like_a_sentence(argv):  # "tm remind me about task 1 tomorrow": a request, not a typo
+        # "tm remind me about task 1 tomorrow" is a request, not a typo. But a real command with
+        # options (`tm config --model Gemini 3.1 Flash`) is a usage mistake, and `do` itself is
+        # never re-sent to `do`: that once looped until Python gave up.
+        if argv and argv[0] != "do" and not any(a.startswith("-") for a in argv) and looks_like_a_sentence(argv):
             return main(["do", *argv])
         ui.error(friendly_usage_error(err, commands, argv))
         return 2
