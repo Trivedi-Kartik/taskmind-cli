@@ -187,6 +187,7 @@ class Workspace:
         self.root = self.repo.root
         self.approve = approve or (lambda command, reason: False)
         self.timeout = timeout
+        self.max_chars, self.max_lines = 3000, 120  # Groq-sized; build() widens them for roomy providers
         self.changed = set()   # files the AI wrote
         self.approved = set()  # commands the user already allowed in this build
         self.existing_tests = {p for p in self.repo.files() if _is_test(p)}
@@ -284,7 +285,7 @@ def call_tool(ws: Workspace, name, args) -> str:
         if name == "run_command":
             command = str(args.get("command") or args.get("cmd") or "").strip()
             return ws.run(command) if command else "Give a command to run."
-        return dispatch(ws.repo, name, args)
+        return dispatch(ws.repo, name, args, max_chars=ws.max_chars, max_lines=ws.max_lines)
     except (ValueError, OSError, RuntimeError) as exc:
         return f"Tool error: {exc}"
 
@@ -409,7 +410,11 @@ def build(llm, task, ws: Workspace, check="", max_steps=40, fix_rounds=3, langua
     event = on_event or (lambda kind, **info: None)
     budget = budget or max(getattr(llm, "context_budget", 9000), 9000)
     # Groq's free tier counts the reserved reply against 8k tokens a minute, so stay modest there.
-    max_tokens = 4000 if budget <= 9000 else 8000
+    max_tokens = 4000 if budget <= 9000 else 8000 if budget < 100_000 else 16000
+    if budget >= 100_000:  # e.g. Gemini, Claude: read whole files, write big ones
+        ws.max_chars, ws.max_lines = 24_000, 800
+    elif budget >= 30_000:
+        ws.max_chars, ws.max_lines = 8000, 300
     known_check = check or detect_check(ws.root)
     goal = f"Task: {task}\n\nProject folder: {ws.root.name}\n\n{_audience(language, simple)}"
     if known_check:

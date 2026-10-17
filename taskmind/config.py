@@ -24,7 +24,7 @@ PROVIDERS = {
         "model": "gemini-2.5-flash",
         "key_env": "GEMINI_API_KEY",
         "signup": "https://aistudio.google.com/apikey",
-        "budget": 60000,
+        "budget": 200000,  # ~50k tokens a request: the free tier allows ~250k a minute
     },
     "openrouter": {
         "label": "OpenRouter", "cost": "free models available", "kind": "openai",

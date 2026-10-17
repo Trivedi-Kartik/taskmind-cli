@@ -232,7 +232,9 @@ def _arg(args, *names, default=None):
     return default
 
 
-def dispatch(repo: Repo, name: str, args: dict) -> str:
+def dispatch(repo: Repo, name: str, args: dict, max_chars=MAX_TOOL_CHARS, max_lines=120) -> str:
+    """Run one tool. Roomy providers get bigger reads (max_chars, max_lines): fewer calls,
+    which matters where free tiers count requests per day."""
     try:
         if name == "list_files":
             result = repo.tree(_arg(args, "path", "dir", "directory", default="."))
@@ -242,7 +244,7 @@ def dispatch(repo: Repo, name: str, args: dict) -> str:
         elif name == "read_file":
             result = repo.read(_arg(args, "path", "file", "file_path"),
                                _arg(args, "start", "start_line", "line_start", "from_line", default=1),
-                               _arg(args, "end", "end_line", "line_end", "to_line"))
+                               _arg(args, "end", "end_line", "line_end", "to_line"), max_lines=max_lines)
         elif name == "recent_commits":
             commits = repo.log(min(int(args.get("n") or 15), 30))
             result = "\n".join(f"{c['sha'][:8]} {c['date'][:10]} {c['subject']}" for c in commits) or "No commits."
@@ -251,6 +253,6 @@ def dispatch(repo: Repo, name: str, args: dict) -> str:
     except (KeyError, ValueError, TypeError, AttributeError, RuntimeError, OSError) as exc:
         result = f"Tool error: {exc}"
     result = redact(result)  # every tool result, before it can reach the AI
-    if len(result) > MAX_TOOL_CHARS:
-        result = result[:MAX_TOOL_CHARS] + "\n... (truncated)"
+    if len(result) > max_chars:
+        result = result[:max_chars] + "\n... (truncated)"
     return result

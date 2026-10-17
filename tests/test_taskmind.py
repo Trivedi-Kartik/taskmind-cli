@@ -2447,6 +2447,20 @@ class TestBuildLoop(unittest.TestCase):
             report = build(llm, "Fix add", self.ws(tmp))
         self.assertEqual(report["status"], "passed", report["check_output"])
 
+    def test_roomy_providers_read_whole_files(self):
+        # Free Gemini counts requests per day: one big read beats five small ones.
+        from taskmind.builder import build
+        llm = FakeLLM(tool_call("read_file", path="big.py"),
+                      tool_call("finish", summary="Read it.", check_command=f"{PY} -c \"pass\""))
+        llm.context_budget = 200_000
+        with TempDir() as tmp:
+            ws = self.ws(tmp)
+            (ws.root / "big.py").write_text("".join(f"x{i} = {i}\n" for i in range(500)), encoding="utf-8")
+            build(llm, "Read", ws)
+        result = [m for m in llm.calls[1]["messages"] if m["role"] == "tool"][0]["content"]
+        self.assertIn("x499 = 499", result)
+        self.assertEqual(llm.calls[0]["kw"]["max_tokens"], 16000)
+
     def test_risky_check_is_not_run(self):
         from taskmind.builder import build
         llm = FakeLLM(tool_call("finish", summary="Done.", check_command="rm -rf build && pytest"))
