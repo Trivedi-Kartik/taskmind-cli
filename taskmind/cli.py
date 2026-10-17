@@ -325,7 +325,13 @@ def run_setup():
     answer = ui.ask(prompt) or suggested
     if not answer:
         raise CLIError("No model chosen.")
-    model = models[int(answer) - 1] if answer.isdigit() and 1 <= int(answer) <= min(len(models), 40) else answer
+    if answer.isdigit():
+        shown = min(len(models), 40)
+        if not 1 <= int(answer) <= shown:
+            raise CLIError(f"{answer} isn't in the list" + (f" (1 to {shown})" if shown else "") +
+                           ". Run `tm setup` again and pick a number from the list, or type the model's name.")
+        answer = models[int(answer) - 1]
+    model = answer
 
     final = {**s, "model": model}
     try:
@@ -746,7 +752,10 @@ def cmd_config(args):
         cfg["provider"], cfg["base_url"], changed = args.provider, None, True
     provider = cfg["provider"]
     if args.model:
-        cfg["models"][provider], changed = args.model, True
+        if args.model.strip().isdigit():
+            raise CLIError(f"'{args.model}' looks like a number from a list, not a model name. Use the name "
+                           f"`tm models` shows, e.g. tm config --model <name>.")
+        cfg["models"][provider], changed = args.model.strip(), True
     if args.key:
         cfg["keys"][provider], changed = args.key, True
     if args.fallback is not None:

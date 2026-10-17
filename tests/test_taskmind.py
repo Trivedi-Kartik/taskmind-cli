@@ -2268,6 +2268,25 @@ class TestGeminiLimits(unittest.TestCase):
         self.assertIn("10h37m44.2s", str(ctx.exception))
 
 
+class TestModelChoiceRegressions(TestCLI):
+    """Seen in real use: Gemini's model was saved as "16", a number from the list."""
+
+    def test_config_refuses_a_bare_number(self):
+        code, out = self.run_cli("config", "--model", "16")
+        self.assertEqual(code, 1)
+        self.assertIn("looks like a number", out)
+
+    def test_groq_request_too_large_sends_less_instead_of_switching(self):
+        from taskmind.llm import LLM, RequestTooLarge
+        detail = '{"error":{"message":"Request too large for model `openai/gpt-oss-20b` ... on tokens per ' \
+                 'minute (TPM): Limit 8000, Requested 8123","code":"rate_limit_exceeded"}}'
+        err = urllib.error.HTTPError("u", 429, "Too Many", {}, io.BytesIO(detail.encode()))
+        with mock.patch("urllib.request.urlopen", side_effect=err), mock.patch("time.sleep") as sleep:
+            with self.assertRaises(RequestTooLarge):
+                LLM("https://x", "m", "k").chat([{"role": "user", "content": "hi"}])
+        sleep.assert_not_called()
+
+
 class TestBuildSafety(unittest.TestCase):
     def test_command_risk(self):
         from taskmind.builder import command_risk

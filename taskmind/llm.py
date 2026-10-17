@@ -107,11 +107,13 @@ class LLM:
             except urllib.error.HTTPError as err:
                 detail = err.read().decode(errors="replace")
                 daily = err.code == 429 and _is_daily_limit(detail)
-                retryable = (err.code == 429 and not daily) or err.code >= 500
+                too_large = "request too large" in detail.lower()
+                retryable = (err.code == 429 and not daily and not too_large) or err.code >= 500
                 if retryable and attempt < self.max_retries:
                     time.sleep(_retry_delay(err.headers.get("retry-after"), detail, attempt))
                     continue
-                if err.code == 413:
+                if err.code == 413 or "request too large" in detail.lower():
+                    # Groq sends this as a 429 too: send less, don't switch provider.
                     raise RequestTooLarge(detail[:500]) from err
                 if err.code == 400 and ("tool_use_failed" in detail or "output_parse_failed" in detail):
                     raise ToolCallError(detail[:500]) from err
