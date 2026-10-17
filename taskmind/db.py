@@ -2,7 +2,17 @@
 
 import json
 import sqlite3
+import weakref
 from datetime import datetime, timezone
+
+# Every open database, so they can all be closed deterministically (Windows can't delete
+# or replace a file that is still open, and WAL files are only tidied up on close).
+_OPEN = weakref.WeakSet()
+
+
+def close_all():
+    for db in list(_OPEN):
+        db.close()
 
 STATUSES = ["inbox", "clarified", "analyzed", "planned", "in_progress", "done"]
 PRIORITIES = ["high", "medium", "low"]
@@ -85,7 +95,15 @@ def _decode(row) -> dict:
 
 
 class DB:
+    def close(self):
+        try:
+            self.conn.close()
+        except sqlite3.Error:
+            pass
+        _OPEN.discard(self)
+
     def __init__(self, path):
+        _OPEN.add(self)
         # timeout: wait (instead of failing) when another TaskMind, e.g. the reminder check, is writing.
         self.conn = sqlite3.connect(str(path), timeout=15)
         self.conn.row_factory = sqlite3.Row

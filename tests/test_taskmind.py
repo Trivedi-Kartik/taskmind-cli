@@ -16,6 +16,16 @@ from taskmind import cli, personal, stages, tracking
 from taskmind import parsing as parsing_module
 from taskmind.agent import TRIMMED, _compact, run_tool_agent
 from taskmind.db import DB
+from taskmind.db import close_all as close_all_dbs
+
+
+class TempDir(tempfile.TemporaryDirectory):
+    """A temporary folder that closes TaskMind's databases before deleting itself.
+    Windows can't delete files that are still open."""
+
+    def cleanup(self):
+        close_all_dbs()
+        super().cleanup()
 from taskmind.llm import RequestTooLarge, ToolCallError, _retry_delay, extract_json
 from taskmind.repo_tools import Repo, dispatch
 
@@ -142,10 +152,11 @@ class TestDB(unittest.TestCase):
 
 class TestRepoTools(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp = TempDir()
         self.repo = Repo(make_repo(self.tmp.name))
 
     def tearDown(self):
+        close_all_dbs()
         self.tmp.cleanup()
 
     def test_files_respect_gitignore(self):
@@ -180,11 +191,12 @@ class TestRepoTools(unittest.TestCase):
 
 class TestAgent(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp = TempDir()
         self.repo = Repo(make_repo(self.tmp.name))
         self.task = {"id": 1, "title": "Rate limit login", "description": ""}
 
     def tearDown(self):
+        close_all_dbs()
         self.tmp.cleanup()
 
     def test_analyze_with_tools(self):
@@ -317,7 +329,7 @@ class TestTracking(unittest.TestCase):
         self.assertEqual(list(tracking.refs_in("fix TM-3.2 and tm-4, not XTM-9")), [(3, 2), (4, None)])
 
     def test_sync_marks_subtasks_from_commits(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with TempDir() as tmp:
             root = make_repo(tmp)
             db = DB(":memory:")
             tid = db.add_task("Rate limit", repo=str(root))
@@ -340,12 +352,13 @@ class TestTracking(unittest.TestCase):
 
 class TestCLI(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp = TempDir()
         self.env = mock.patch.dict(os.environ, {"TASKMIND_HOME": self.tmp.name, "GROQ_API_KEY": ""})
         self.env.start()
 
     def tearDown(self):
         self.env.stop()
+        close_all_dbs()
         self.tmp.cleanup()
 
     def run_cli(self, *argv, llm=None, stdin=""):
@@ -460,7 +473,7 @@ class TestSecurityChecklist(unittest.TestCase):
         self.assertIn("has to do this", got[1]["note"])
 
     def test_analysis_always_has_security_even_if_model_skips_it(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with TempDir() as tmp:
             repo = Repo(make_repo(tmp))
             llm = FakeLLM(json.dumps(ANALYSIS))  # no "security" key in the reply
             result = stages.analyze(llm, {"id": 1, "title": "Rate limit login"}, repo)
@@ -502,7 +515,7 @@ class TestSecurityChecklist(unittest.TestCase):
         self.assertIn("not assessed yet", text)
 
     def test_db_migration_adds_verification_column(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with TempDir() as tmp:
             path = Path(tmp) / "old.db"
             import sqlite3
             conn = sqlite3.connect(path)
@@ -535,11 +548,12 @@ class TestVerify(unittest.TestCase):
     def setUp(self):
         from taskmind import verify
         self.verify = verify
-        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp = TempDir()
         self.root = make_repo(self.tmp.name)
         self.repo = Repo(self.root)
 
     def tearDown(self):
+        close_all_dbs()
         self.tmp.cleanup()
 
     def commit(self, path, text, message):
@@ -630,13 +644,14 @@ class TestVerifyCLI(TestCLI):
 
 class TestProviders(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp = TempDir()
         self.env = mock.patch.dict(os.environ, {"TASKMIND_HOME": self.tmp.name, "GROQ_API_KEY": "",
                                                 "OPENAI_API_KEY": "", "ANTHROPIC_API_KEY": ""})
         self.env.start()
 
     def tearDown(self):
         self.env.stop()
+        close_all_dbs()
         self.tmp.cleanup()
 
     def test_old_single_key_config_is_migrated(self):
@@ -813,7 +828,7 @@ class TestClaude(unittest.TestCase):
         use = FakeBlock(type="tool_use", id="tu_1", name="read_file", input={"path": "app/auth.py"})
         final = FakeBlock(type="text", text=json.dumps(ANALYSIS))
         llm, fake = self.make(claude_reply(thinking, use, stop="tool_use"), claude_reply(final))
-        with tempfile.TemporaryDirectory() as tmp:
+        with TempDir() as tmp:
             text = run_tool_agent(llm, "sys", "goal", Repo(make_repo(tmp)))
         self.assertEqual(json.loads(text)["summary"], ANALYSIS["summary"])
         first, second = fake.calls
@@ -1337,7 +1352,7 @@ class TestReviewRegressions(unittest.TestCase):
         self.assertEqual(stages.clarify_questions(llm, {"id": 1, "title": "t"}), ["What deadline?"])
         with self.assertRaises(LLMError):  # two bad replies: a clean error that triggers failover
             stages.clarify_questions(FakeLLM("[]", "[1]"), {"id": 1, "title": "t"})
-        with tempfile.TemporaryDirectory() as tmp:
+        with TempDir() as tmp:
             repo = Repo(make_repo(tmp))
             bad_args = {"role": "assistant", "content": "", "tool_calls": [
                 {"id": "c1", "function": {"name": "list_files", "arguments": '["src"]'}}]}
@@ -1369,7 +1384,7 @@ class TestReviewRegressions(unittest.TestCase):
 
     @unittest.skipIf(os.name == "nt", "symlinks need admin rights on Windows")
     def test_search_ignores_symlinks_out_of_repo_and_finds_unicode_names(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with TempDir() as tmp:
             (Path(tmp) / "secret.txt").write_text("SECRET_KEY=abc\n")
             root = Path(tmp) / "r"
             root.mkdir()
@@ -1395,7 +1410,7 @@ class TestReviewRegressions(unittest.TestCase):
     @unittest.skipIf(os.name == "nt", "POSIX file permissions")
     def test_config_file_is_never_world_readable(self):
         from taskmind import config
-        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"TASKMIND_HOME": tmp}):
+        with TempDir() as tmp, mock.patch.dict(os.environ, {"TASKMIND_HOME": tmp}):
             old = os.umask(0o022)
             try:
                 with mock.patch.object(Path, "chmod"):  # even without the final chmod
@@ -1406,7 +1421,7 @@ class TestReviewRegressions(unittest.TestCase):
 
     def test_verify_counts_references_like_sync(self):
         from taskmind import verify
-        with tempfile.TemporaryDirectory() as tmp:
+        with TempDir() as tmp:
             root = make_repo(tmp)
             for i, msg in enumerate(["Fix TM-1.1", "Finish TM-1.2.", "Done: TM-1.", "TM-11 other", "XTM-1 no"]):
                 (root / f"f{i}.txt").write_text(msg)
@@ -1418,7 +1433,7 @@ class TestReviewRegressions(unittest.TestCase):
                 verify.collect_changes(Repo(root), 1, since="2099-01-01T00:00:00+00:00")
 
     def test_missing_git_does_not_crash(self):
-        with tempfile.TemporaryDirectory() as tmp, \
+        with TempDir() as tmp, \
                 mock.patch("subprocess.run", side_effect=FileNotFoundError("git")):
             repo = Repo(tmp)
             self.assertFalse(repo.is_git)
@@ -1455,7 +1470,7 @@ class TestReviewRegressions(unittest.TestCase):
 
     def test_recording_is_deleted_on_error(self):
         from taskmind import voice
-        with tempfile.TemporaryDirectory() as tmp:
+        with TempDir() as tmp:
             target = Path(tmp) / "rec.wav"
             proc = FakeBlock(poll=lambda: None, send_signal=lambda s: target.write_bytes(b"RIFF"),
                              wait=lambda timeout=None: 0)
@@ -1955,7 +1970,7 @@ class TestSecrets(unittest.TestCase):
 
     def test_secret_files_never_reach_the_ai(self):
         from taskmind import verify
-        with tempfile.TemporaryDirectory() as tmp:
+        with TempDir() as tmp:
             root = make_repo(tmp)
             (root / ".env").write_text("STRIPE_KEY=" + "sk_" + "live_51Habcdefghijklmnopqrstuvwxyz\n")
             (root / "id_rsa").write_text("-----BEGIN OPENSSH " + "PRIVATE KEY-----\nabc\n-----END OPENSSH " + "PRIVATE KEY-----\n")

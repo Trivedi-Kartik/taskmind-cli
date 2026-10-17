@@ -13,7 +13,7 @@ from pathlib import Path
 
 from taskmind import (__version__, config, diagnostics, github, helpdocs, insights, reminders,
                       routing, stages, tracking, tutorial, ui, verify, voice)
-from taskmind.db import PRIORITIES, STATUSES
+from taskmind.db import PRIORITIES, STATUSES, close_all
 from taskmind.db import now as db_now
 from taskmind import llm as llm_client
 from taskmind.llm import LLMError
@@ -1443,6 +1443,20 @@ def safe_output():
 
 
 def main(argv=None) -> int:
+    global _DEPTH
+    _DEPTH += 1
+    try:
+        return _main(argv)
+    finally:
+        _DEPTH -= 1
+        if _DEPTH == 0:
+            close_all()  # tidy up WAL files; lets Windows delete or replace the database
+
+
+_DEPTH = 0
+
+
+def _main(argv=None) -> int:
     safe_output()
     parser = build_parser()
     argv = list(sys.argv[1:] if argv is None else argv)

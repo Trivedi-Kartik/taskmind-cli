@@ -67,6 +67,9 @@ class Runner:
         print(f"{mark}  {name}  ({time.time() - start:.1f}s)" + ("" if ok else "\n      " + "; ".join(problems)))
         if not ok:
             print("      " + out.strip().replace("\n", "\n      ")[-1500:])
+            if os.environ.get("GITHUB_ACTIONS"):  # visible on GitHub without logging in
+                detail = ("; ".join(problems) + "\n" + out.strip()[-1500:]).replace("%", "%25").replace("\n", "%0A")
+                print(f"::error title=smoke test: {name}::{detail}")
         return out
 
 

@@ -157,7 +157,9 @@ def cmd_backup(args):
         if not ui.confirm(f"Replace your current task list with {source.name}? (The current one is backed up first.)"):
             return
         db.backup_to(backups_dir() / f"before-restore-{datetime.now():%Y%m%d-%H%M%S}.db")
-        DB(source).backup_to(config.db_path())
+        backup = DB(source)
+        backup.backup_to(config.db_path())
+        backup.close()
         ui.out(f"[green]Restored from {ui.escape(source.name)}.[/green]")
         return
     if args.list:
