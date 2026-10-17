@@ -19,6 +19,7 @@ from taskmind import parsing as parsing_module
 from taskmind.agent import TRIMMED, _compact, run_tool_agent
 from taskmind.db import DB
 from taskmind.db import close_all as close_all_dbs
+from taskmind.core import remove_tree
 
 
 class TempDir(tempfile.TemporaryDirectory):
@@ -43,7 +44,7 @@ class TempDir(tempfile.TemporaryDirectory):
                     pass
             if os.environ.get("GITHUB_ACTIONS"):
                 print(f"::warning title=open sqlite connections::{len(leaked)} still open at cleanup")
-            shutil.rmtree(self.name, ignore_errors=True)
+            remove_tree(self.name)
 from taskmind.llm import RequestTooLarge, ToolCallError, _retry_delay, extract_json
 from taskmind.repo_tools import Repo, dispatch
 
@@ -1068,15 +1069,15 @@ class TestVoice(unittest.TestCase):
 
             def __exit__(self, *a):
                 return False
-        with tempfile.NamedTemporaryFile(suffix=".wav") as f, \
-                mock.patch.dict(os.environ, {"GROQ_API_KEY": "", "OPENAI_API_KEY": ""}):
-            f.write(b"RIFF" + b"\0" * 100)
-            f.flush()
+        # A plain file in a temp folder: Windows can't reopen a NamedTemporaryFile that's still open.
+        with TempDir() as tmp, mock.patch.dict(os.environ, {"GROQ_API_KEY": "", "OPENAI_API_KEY": ""}):
+            wav = Path(tmp) / "speech.wav"
+            wav.write_bytes(b"RIFF" + b"\0" * 100)
             with mock.patch.object(urllib.request, "urlopen",
                                    side_effect=lambda req, timeout: sent.append(req) or Resp(b'{"text": " Fix login "}')):
-                self.assertEqual(self.voice.transcribe(cfg, f.name), "Fix login")
+                self.assertEqual(self.voice.transcribe(cfg, wav), "Fix login")
             with mock.patch.object(urllib.request, "urlopen", side_effect=lambda req, timeout: Resp(b'{"text": " ."}')):
-                self.assertEqual(self.voice.transcribe(cfg, f.name), "")
+                self.assertEqual(self.voice.transcribe(cfg, wav), "")
         self.assertTrue(sent[0].full_url.startswith("https://api.groq.com"))
         self.assertIn(b"whisper-large-v3-turbo", sent[0].data)
         self.assertEqual(sent[0].get_header("User-agent"), "taskmind/0.1")
@@ -1541,7 +1542,7 @@ class TestReviewRegressionsCLI(TestCLI):
         make_repo(bad)
         self.run_cli("add", "Broken", "--repo", str(bad))
         self.run_cli("add", "Good", "--repo", str(good))
-        shutil.rmtree(bad)
+        remove_tree(bad)
         (good / "x.txt").write_text("x")
         git(good, "add", ".")
         git(good, "commit", "-qm", "Start TM-2")

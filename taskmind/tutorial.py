@@ -11,6 +11,8 @@ import subprocess
 from contextlib import contextmanager
 
 from taskmind import config, ui
+from taskmind.core import remove_tree
+from taskmind.db import close_all
 
 OVERVIEW = """[bold]TaskMind: a to-do list that thinks.[/bold] A task goes through four phases:
 
@@ -106,7 +108,7 @@ def practice_space():
     real_home = config.home()
     space = real_home / "tutorial"
     if space.exists():
-        shutil.rmtree(space)
+        remove_tree(space)
     data, project = space / "data", space / "notes-app"
     data.mkdir(parents=True)
     project.mkdir()
@@ -252,6 +254,7 @@ def run(main):
         ui.out(f"[dim]Kept in {ui.escape(str(space))}. View it with: "
                f"TASKMIND_HOME={ui.escape(str(space / 'data'))} tm list[/dim]")
     else:
-        shutil.rmtree(space, ignore_errors=True)
+        close_all()  # the practice list is still open; Windows can't delete open files
+        remove_tree(space)
         ui.out("[dim]Practice files removed. Your real task list was never changed.[/dim]")
     return 0

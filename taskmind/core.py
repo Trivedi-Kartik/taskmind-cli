@@ -1,7 +1,9 @@
 """Basics every command uses: errors, the database (with daily backups), finding tasks and projects."""
 
+import os
 import shutil
 import sqlite3
+import stat
 import subprocess
 import sys
 from datetime import date
@@ -95,3 +97,19 @@ def copy_to_clipboard(text) -> bool:
 
 def interactive():
     return sys.stdin.isatty()
+
+
+def remove_tree(path):
+    """Delete a folder, including read-only files (git marks its objects read-only,
+    and Windows refuses to delete those until they're made writable)."""
+    def make_writable_and_retry(func, target, _exc):
+        try:
+            for p in (os.path.dirname(target), target):  # the file, and the folder that holds it
+                os.chmod(p, os.stat(p).st_mode | stat.S_IWRITE | stat.S_IREAD | stat.S_IEXEC * os.path.isdir(p))
+            func(target)
+        except OSError:
+            pass
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=make_writable_and_retry)
+    else:
+        shutil.rmtree(path, onerror=make_writable_and_retry)
