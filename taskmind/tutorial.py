@@ -255,6 +255,10 @@ def run(main):
                f"TASKMIND_HOME={ui.escape(str(space / 'data'))} tm list[/dim]")
     else:
         close_all()  # the practice list is still open; Windows can't delete open files
-        remove_tree(space)
-        ui.out("[dim]Practice files removed. Your real task list was never changed.[/dim]")
+        if remove_tree(space):
+            ui.out("[dim]Practice files removed. Your real task list was never changed.[/dim]")
+        else:
+            ui.out(f"[yellow]Some practice files are still in use, so they couldn't be removed yet. You can "
+                   f"delete this folder later: {ui.escape(str(space))}[/yellow] [dim](Your real task list "
+                   "was never changed.)[/dim]")
     return 0

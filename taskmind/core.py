@@ -99,9 +99,11 @@ def interactive():
     return sys.stdin.isatty()
 
 
-def remove_tree(path):
+def remove_tree(path, attempts=6) -> bool:
     """Delete a folder, including read-only files (git marks its objects read-only,
-    and Windows refuses to delete those until they're made writable)."""
+    and Windows refuses to delete those until they're made writable). On Windows,
+    antivirus or indexing often holds just-created files for a moment, so retry
+    briefly. Returns True when the folder is gone."""
     def make_writable_and_retry(func, target, _exc):
         try:
             for p in (os.path.dirname(target), target):  # the file, and the folder that holds it
@@ -109,7 +111,17 @@ def remove_tree(path):
             func(target)
         except OSError:
             pass
-    if sys.version_info >= (3, 12):
-        shutil.rmtree(path, onexc=make_writable_and_retry)
-    else:
-        shutil.rmtree(path, onerror=make_writable_and_retry)
+    import gc
+    import time
+    for attempt in range(attempts):
+        if not os.path.exists(path):
+            return True
+        if sys.version_info >= (3, 12):
+            shutil.rmtree(path, onexc=make_writable_and_retry)
+        else:
+            shutil.rmtree(path, onerror=make_writable_and_retry)
+        if not os.path.exists(path):
+            return True
+        gc.collect()  # drop anything still holding a file open
+        time.sleep(0.25 * (attempt + 1))
+    return not os.path.exists(path)
