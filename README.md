@@ -863,3 +863,7 @@ by topic: `cli.py` (commands and the AI flow), `core.py`, `parsing.py`, `display
 The unit tests replace the AI with scripted fakes. The live smoke test uses a
 temporary data folder and a temporary git project (your tasks are untouched),
 costs roughly 60-90k tokens, and may show one desktop notification.
+
+## License
+
+MIT © 2026 Kartik Trivedi. Free to use, change and share; see [LICENSE](LICENSE).

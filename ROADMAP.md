@@ -45,7 +45,8 @@ The AI's judgment varies between runs, and we don't yet *measure* how good its p
 - [ ] **Large projects:** a cached code index for fast search in big repos (thousands of files)
 - [ ] **Speed:** measure the time for each command; reuse work across runs
 - [ ] macOS and Windows fully supported (recording, notifications, reminders)
-- [ ] A simple home page, a short demo video, a LICENSE, and a public GitHub repo
+- [x] A LICENSE (MIT) and a public GitHub repo
+- [ ] A simple home page and a short demo video
 - [ ] Release notes and versioning
 
 ## Phase 3: product
