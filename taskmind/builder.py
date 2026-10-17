@@ -208,7 +208,7 @@ class Workspace:
         path = self._target(rel)
         existed = path.exists()
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8", newline="")
+        _write(path, content)
         self._touched(path)
         lines = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
         return f"{'Replaced' if existed else 'Created'} {rel} ({lines} lines)."
@@ -229,7 +229,7 @@ class Workspace:
             hint = ("not found. Read the file again and copy the exact text, without the line numbers"
                     if count == 0 else f"found {count} times. Include more surrounding lines so it's unique")
             raise ValueError(f"`old` text {hint}.")
-        path.write_text(text.replace(old_try, new_try, 1), encoding="utf-8", newline="")
+        _write(path, text.replace(old_try, new_try, 1))
         self._touched(path)
         return f"Edited {rel}."
 
@@ -253,6 +253,13 @@ class Workspace:
         """Tests that existed before the build and were changed: worth a human look,
         since making tests pass by weakening them is the classic shortcut."""
         return sorted(self.changed & self.existing_tests)
+
+
+def _write(path, text):
+    """Write exactly these characters (no line-ending changes on Windows). Path.write_text's
+    newline= needs Python 3.10, and TaskMind supports 3.9."""
+    with open(path, "w", encoding="utf-8", newline="") as fh:
+        fh.write(text)
 
 
 _LINE_NUMBER = re.compile(r"^ *\d+ ?", re.M)
