@@ -1127,6 +1127,54 @@ def _new_project(name):
     return str(folder)
 
 
+def cmd_index(args):
+    """Show, check or rebuild the code index of this project."""
+    from taskmind.codeindex import Index, cache_path
+    from taskmind.repo_tools import Repo
+    root = Path(os.getcwd())
+    try:
+        repo = Repo(root)
+    except ValueError as exc:
+        raise CLIError(str(exc)) from exc
+    if not repo.code_file_count():
+        raise CLIError("No code files found here. Run this inside a project (a folder with .py, .js, .ts, "
+                       ".go, .rs, .java, .html ... files).")
+    if args.rebuild:
+        Index.forget(repo)
+    with ui.working("Reading the code..."):
+        index = repo.index
+    if args.find:
+        ui.plain(index.find_symbol(args.find))
+        return 0
+    if args.outline:
+        ui.plain(index.outline(args.outline))
+        return 0
+    info = index.summary()
+    langs = ", ".join(f"{n} {lang}" for lang, n in info["languages"].items())
+    ui.out(f"[bold]Code index for {ui.escape(root.name)}[/bold]")
+    ui.out(f"  {info['files']:,} code files ({langs})")
+    ui.out(f"  {info['symbols']:,} definitions, {info['links']:,} links between files")
+    when = ("built just now" if info["first"] else
+            f"{info['parsed']} changed file{'s' if info['parsed'] != 1 else ''} read again" if info["parsed"]
+            else "up to date")
+    ui.out(f"  {when} ({info['seconds']}s); saved in {ui.escape(str(cache_path(repo.root)))}")
+    if info["most_imported"]:
+        ui.out("\n[bold]Most imported files[/bold]")
+        for path, count in info["most_imported"]:
+            ui.out(f"  {count:>4}  {ui.escape(path)}")
+    if repo.truncated:
+        ui.out(f"\n[yellow]This project has {repo.truncated:,} more files than TaskMind lists "
+               f"({len(repo.files()):,} are covered).[/yellow]")
+    size = repo.code_file_count()
+    from taskmind.codeindex import MAP_MIN_FILES, TOOLS_MIN_FILES
+    ui.out("\n[dim]" + ("Builds here get a project map and the find_symbol / file_outline tools."
+                         if size >= TOOLS_MIN_FILES else
+                         "Builds here get a project map." if size >= MAP_MIN_FILES else
+                         "Small project: builds just list its files, no index needed.") +
+           " Try: tm index --find <name>, tm index --outline <file>[/dim]")
+    return 0
+
+
 def cmd_init(args):
     """Study the project and write TASKMIND.md: notes every build reads first."""
     from taskmind import builder, project
@@ -1253,13 +1301,22 @@ def _offer_new_folder(root, text, yes):
 
 
 def _show_build_event(kind, name=None, args=None, result=None, command=None, code=None, output=None,
-                      notes=None, attached=None):
+                      notes=None, attached=None, index=None, files=None):
     args = args or {}
-    if kind == "context":
+    if kind == "indexing":
+        ui.out(f"  🗺  Reading {files:,} code files once to build the code index (later runs only read what changed)...")
+    elif kind == "context":
         if notes:
             ui.out(f"  📘 Project notes: {ui.escape(', '.join(notes))}")
         if attached:
             ui.out(f"  📎 Starting from: {ui.escape(', '.join(attached))}")
+        if index:
+            changed = f", {index['parsed']} updated" if index.get("parsed") and not index.get("first") else ""
+            ui.out(f"  🗺  Code index: {index['files']:,} files, {index['symbols']:,} definitions{changed}")
+            if index.get("relevant"):
+                ui.out(f"  🎯 Probably relevant: {ui.escape(', '.join(index['relevant'][:5]))}")
+            if index.get("shown"):
+                ui.out(f"  📄 Handed to the AI up front: {ui.escape(', '.join(index['shown']))}")
     elif kind == "tool":
         if name == "run_command":
             ui.out(f"  ▶ [cyan]{ui.escape(str(args.get('command', ''))[:120])}[/cyan]")
@@ -1787,6 +1844,11 @@ def build_parser():
     sp.add_argument("--tool", choices=list(TOOLS), default="claude")
     sp.add_argument("-y", "--yes", action="store_true")
 
+    sp = add("index", cmd_index, "Show the code index TaskMind keeps of this project (definitions and who "
+                                 "imports what); --find, --outline, --rebuild")
+    sp.add_argument("--find", metavar="NAME", help="Where a function, class or constant is defined")
+    sp.add_argument("--outline", metavar="FILE", help="A file's definitions, imports and importers")
+    sp.add_argument("--rebuild", action="store_true", help="Throw the saved index away and read everything again")
     sp = add("init", cmd_init, "Study this project and write TASKMIND.md: notes every build reads first")
     sp.add_argument("-y", "--yes", action="store_true", help="Replace an existing TASKMIND.md and save it in "
                                                              "git without asking")
@@ -1804,7 +1866,7 @@ def build_parser():
                     'tm build --more "make the button bigger" (no text: continue where it stopped)')
     sp.add_argument("--undo", action="store_true", help="Take back the last build in this folder "
                                                          "(kept or not); nothing else is touched")
-    sp.add_argument("--max-steps", type=int, default=40, help=argparse.SUPPRESS)
+    sp.add_argument("--max-steps", type=int, default=None, help=argparse.SUPPRESS)
     sp = add("step", cmd_step, "Add, edit, remove or list a task's steps yourself")
     sp.add_argument("action", choices=["add", "edit", "rm", "list", "show"])
     sp.add_argument("ref", help="Task (for add/list), or step like 3.2 (for edit/rm/show); `tm step 3.2` shows it")

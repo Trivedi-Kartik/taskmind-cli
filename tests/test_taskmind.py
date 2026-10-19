@@ -10,6 +10,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import unittest
 from pathlib import Path
@@ -2991,7 +2992,7 @@ class TestProjectContext(unittest.TestCase):
         goal = llm.calls[0]["messages"][1]["content"]
         self.assertIn("Always add type hints", goal)
         self.assertIn("return a - b", goal)  # the mentioned file, up front
-        self.assertIn(("context", {"notes": ["AGENTS.md"], "attached": ["calc.py"]}), events)
+        self.assertIn(("context", {"notes": ["AGENTS.md"], "attached": ["calc.py"], "index": {}}), events)
 
 
 class TestInitAndMentionsCLI(TestCLI):
@@ -3137,3 +3138,535 @@ class TestFollowUps(TestCLI):
         state = {"rounds": [{"request": "x" * 400, "status": "passed", "summary": "y" * 600, "changed": ["a"]}] * 10}
         self.assertLessEqual(len(builder.history_text(state, limit=2000)), 2100)
         self.assertTrue(builder.history_text(state, limit=2000).startswith("... (older rounds left out)"))
+
+
+# The code index: definitions, import links, lookups, and big projects
+
+def write_files(root, files):
+    root = Path(root)
+    for rel, text in files.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text, encoding="utf-8")
+    return root
+
+
+def code_project(root, count):
+    """`count` small Python modules, each importing the one before it."""
+    files = {}
+    for i in range(count):
+        head = f"from pkg.mod{i - 1} import fn{i - 1}\n\n" if i else ""
+        files[f"pkg/mod{i}.py"] = f"{head}def fn{i}(x):\n    return x + {i}\n"
+    return write_files(root, files)
+
+
+def find_symbol_call(symbol):
+    """tool_call(...) can't pass an argument called `name`; this builds that call directly."""
+    return {"role": "assistant", "content": "", "tool_calls": [{"id": "call_find", "type": "function", "function": {
+        "name": "find_symbol", "arguments": json.dumps({"name": symbol})}}]}
+
+
+class IndexCase(unittest.TestCase):
+    """A fresh TaskMind folder per test, so saved indexes never leak between tests."""
+
+    def setUp(self):
+        self.home = TempDir()
+        self.env = mock.patch.dict(os.environ, {"TASKMIND_HOME": self.home.name})
+        self.env.start()
+        self.tmp = TempDir()
+
+    def tearDown(self):
+        self.env.stop()
+        self.tmp.cleanup()
+        self.home.cleanup()
+
+    def index(self, files=None, root=None):
+        root = write_files(root or self.tmp.name, files or {})
+        return Repo(root).index
+
+
+class TestCodeParsers(unittest.TestCase):
+    def test_python_definitions_and_imports(self):
+        from taskmind.codeindex import parse
+        symbols, imports = parse("python", (
+            "import os\nfrom . import util\nfrom .a.b import x, y\nTAX_RATE = 5\nclass Foo:\n"
+            "    def bar(self): pass\n    class Inner:\n        def deep(self): pass\nasync def go(): pass\n"
+            "def f():\n    from pkg import lazy\nif True:\n    def guarded(): pass\n"))
+        self.assertEqual([s[:3] for s in symbols], [
+            ["TAX_RATE", "v", 4], ["Foo", "c", 5], ["Foo.bar", "m", 6], ["Foo.Inner", "c", 7],
+            ["Foo.Inner.deep", "m", 8], ["go", "f", 9], ["f", "f", 10], ["guarded", "f", 13]])
+        self.assertEqual([(s[0], s[3]) for s in symbols if s[0] in ("Foo", "Foo.Inner", "f")],
+                         [("Foo", 8), ("Foo.Inner", 8), ("f", 11)])  # exact end lines for Python
+        self.assertIn([0, "os", []], imports)
+        self.assertIn([1, "", ["util"]], imports)
+        self.assertIn([1, "a.b", ["x", "y"]], imports)
+        self.assertIn([0, "pkg", ["lazy"]], imports)  # imports inside functions count
+
+    def test_python_that_does_not_parse_still_gets_a_map(self):
+        from taskmind.codeindex import parse
+        symbols, imports = parse("python", "print 'old python'\nimport os, sys\nclass A:\n    def m(self):\n        pass\n"
+                                           "def f(): pass\nfrom . import x\n")
+        self.assertEqual([s[:2] for s in symbols], [["A", "c"], ["A.m", "m"], ["f", "f"]])
+        self.assertIn([0, "sys", []], imports)
+        self.assertIn([1, "", ["x"]], imports)
+
+    def test_javascript_and_typescript(self):
+        from taskmind.codeindex import parse
+        symbols, imports = parse("js", (
+            "import a from './a'\nconst b = require('../b')\nexport default class Cart {\n  add(item) {\n    if (x) {\n"
+            "    }\n  }\n  static async load(id) {\n  }\n}\nexport const total = (a, b) => a + b\n"
+            "export function pay() {}\nconst MAX_ITEMS = 10\nexport interface Order {}\n"
+            "export type Id = string\nconst lazy = () => import('./lazy')\n"))
+        self.assertEqual([s[:2] for s in symbols], [
+            ["Cart", "c"], ["Cart.add", "m"], ["Cart.load", "m"], ["total", "f"], ["pay", "f"], ["MAX_ITEMS", "v"],
+            ["Order", "t"], ["Id", "t"], ["lazy", "f"]])  # `if (x) {` is not a method
+        self.assertEqual([i[1] for i in imports], ["./a", "../b", "./lazy"])
+
+    def test_other_languages(self):
+        from taskmind.codeindex import parse
+        go, _ = parse("go", "func (s *Server) Handle(w int) {}\nfunc main() {}\ntype Config struct {\n}\n")
+        self.assertEqual([s[:2] for s in go], [["Server.Handle", "m"], ["main", "f"], ["Config", "c"]])
+        rust, _ = parse("rust", "pub async fn run() {}\nstruct Point {}\npub trait Draw {}\n    fn helper() {}\n")
+        self.assertEqual([s[:2] for s in rust], [["run", "f"], ["Point", "c"], ["Draw", "c"], ["helper", "f"]])
+        ruby, _ = parse("ruby", "module Shop\n  class Cart\n    def add(item)\n    end\n  end\nend\n")
+        self.assertEqual([s[0] for s in ruby], ["Shop", "Cart", "add"])
+        php, _ = parse("php", "<?php\nclass Cart {\n    public static function add($x) {}\n}\n")
+        self.assertEqual([s[0] for s in php], ["Cart", "add"])
+        java, _ = parse("java", "public class Cart {\n    public int total(int x) {\n        if (x) {\n        }\n"
+                                "    }\n    fun kotlin(a: Int) {}\n}\n")
+        self.assertEqual([s[0] for s in java], ["Cart", "total", "kotlin"])  # `if (x) {` is not a method
+
+    def test_definitions_without_exact_ends_run_to_the_next_definition(self):
+        from taskmind.codeindex import parse
+        symbols, _ = parse("go", "func one() {\n}\n\nfunc two() {\n\tx := 1\n}\n")
+        self.assertEqual(symbols, [["one", "f", 1, 3], ["two", "f", 4, 7]])
+        long_one, _ = parse("go", "func big() {\n" + "\tx := 1\n" * 200 + "}\n")
+        self.assertEqual(long_one[0][3], 81)  # never more than 80 lines on
+
+    def test_html_ids_and_references(self):
+        from taskmind.codeindex import parse
+        symbols, imports = parse("html", '<link href="styles.css"><nav id="menu">\n<a id="order-btn" href="#top">'
+                                        '<script src="app.js"></script><img src="https://x.io/a.png">')
+        self.assertEqual([s[:3] for s in symbols], [["menu", "i", 1], ["order-btn", "i", 2]])
+        self.assertEqual([i[1] for i in imports], ["styles.css", "app.js", "https://x.io/a.png"])
+
+    def test_big_generated_files_are_capped(self):
+        from taskmind.codeindex import MAX_SYMBOLS, parse
+        symbols, _ = parse("python", "".join(f"def f{i}(): pass\n" for i in range(MAX_SYMBOLS + 100)))
+        self.assertEqual(len(symbols), MAX_SYMBOLS)
+
+
+class TestImportLinks(IndexCase):
+    def links(self, files):
+        index = self.index(files)
+        index._derive()
+        return index.deps, index.rdeps
+
+    def test_python_absolute_relative_and_package_imports(self):
+        deps, rdeps = self.links({
+            "app/__init__.py": "", "app/main.py": "from app import util\nfrom .models import User\nimport os, json\n",
+            "app/util.py": "", "app/models.py": "from . import util\n", "run.py": "import app.main\nfrom app.main import x\n"})
+        self.assertEqual(sorted(deps["app/main.py"]), ["app/models.py", "app/util.py"])  # not app/__init__.py
+        self.assertEqual(deps["app/models.py"], ["app/util.py"])
+        self.assertEqual(deps["run.py"], ["app/main.py"])
+        self.assertEqual(sorted(rdeps["app/util.py"]), ["app/main.py", "app/models.py"])
+
+    def test_python_src_layout_and_scripts_next_to_each_other(self):
+        deps, _ = self.links({"src/pkg/__init__.py": "", "src/pkg/core.py": "", "src/pkg/cli.py": "from pkg.core import go\n",
+                              "scripts/run.py": "import helper\nimport pkg.core\n", "scripts/helper.py": ""})
+        self.assertEqual(deps["src/pkg/cli.py"], ["src/pkg/core.py"])
+        self.assertEqual(sorted(deps["scripts/run.py"]), ["scripts/helper.py", "src/pkg/core.py"])
+
+    def test_names_that_exist_in_the_standard_library_do_not_link_by_accident(self):
+        deps, _ = self.links({"a/main.py": "import json\nimport utils\n", "a/lib/json.py": "", "a/lib/utils.py": ""})
+        self.assertEqual(deps["a/main.py"], [])  # json/utils live elsewhere, not where main.py can import them
+
+    def test_javascript_relative_alias_and_index_files(self):
+        deps, _ = self.links({
+            "src/app.ts": "import a from './a'\nimport {b} from './lib'\nimport c from '@/util/c'\nimport r from 'react'\n"
+                          "import d from './d.js'\n",
+            "src/a.tsx": "", "src/lib/index.ts": "", "src/util/c.js": "", "src/d.ts": ""})
+        self.assertEqual(sorted(deps["src/app.ts"]), ["src/a.tsx", "src/d.ts", "src/lib/index.ts", "src/util/c.js"])
+
+    def test_html_links_to_its_scripts_and_styles(self):
+        deps, _ = self.links({"index.html": '<link href="css/site.css"><script src="app.js"></script>'
+                                            '<script src="https://cdn.x.io/lib.js"></script>',
+                              "css/site.css": "", "app.js": ""})
+        self.assertEqual(deps["index.html"], ["app.js"])  # css isn't an indexed language; URLs are ignored
+
+
+class TestIndexLifecycle(IndexCase):
+    def test_second_run_reads_nothing_and_changes_are_picked_up(self):
+        root = code_project(self.tmp.name, 5)
+        first = Repo(root).index
+        self.assertEqual((first.stats["parsed"], first.stats["first"]), (5, True))
+        again = Repo(root).index  # a new run: loaded from the saved copy
+        self.assertEqual((again.stats["parsed"], again.stats["first"]), (0, False))
+        (root / "pkg" / "mod2.py").write_text("def brand_new(): pass\n", encoding="utf-8")
+        (root / "pkg" / "mod9.py").write_text("def added(): pass\n", encoding="utf-8")
+        (root / "pkg" / "mod0.py").unlink()
+        third = Repo(root).index
+        self.assertEqual((third.stats["parsed"], third.stats["removed"]), (2, 1))
+        self.assertIn("brand_new", third.find_symbol("brand_new"))
+        self.assertIn("added", third.find_symbol("added"))
+        self.assertTrue(third.find_symbol("fn0").startswith("No symbol named 'fn0'"))
+
+    def test_damaged_or_outdated_saved_copies_are_rebuilt(self):
+        from taskmind.codeindex import cache_path
+        root = code_project(self.tmp.name, 3)
+        Repo(root).index
+        cache_path(Repo(root).root).write_text("{not json", encoding="utf-8")
+        self.assertEqual(Repo(root).index.stats["parsed"], 3)
+        cache_path(Repo(root).root).write_text(json.dumps({"version": 0, "root": str(Repo(root).root), "files": {}}))
+        self.assertEqual(Repo(root).index.stats["parsed"], 3)
+
+    def test_each_project_has_its_own_index_outside_the_project(self):
+        from taskmind.codeindex import cache_path
+        a, b = code_project(Path(self.tmp.name) / "a", 3), code_project(Path(self.tmp.name) / "b", 4)
+        Repo(a).index, Repo(b).index
+        self.assertNotEqual(cache_path(Repo(a).root), cache_path(Repo(b).root))
+        self.assertEqual(Repo(a).index.summary()["files"], 3)
+        self.assertEqual(Repo(b).index.summary()["files"], 4)
+        self.assertFalse(any("index" in p.name for p in a.rglob("*") if p.is_file()))  # nothing written in the project
+        self.assertEqual(sorted(p.name for p in a.iterdir()), ["pkg"])
+
+    def test_secrets_are_never_indexed_or_stored(self):
+        index = self.index({"app.py": "def ok(): pass\n", ".env": "def sneaky_secret(): pass\nKEY=1\n",
+                            "config/credentials.json": "{}", "keys/id_rsa": "x", "node_modules/x.py": "def junk(): pass\n"})
+        self.assertEqual(list(index.files), ["app.py"])
+        from taskmind.codeindex import cache_path
+        self.assertNotIn("sneaky_secret", cache_path(index.repo.root).read_text(encoding="utf-8"))
+
+    def test_symlinks_and_huge_files(self):
+        from taskmind.codeindex import MAX_PARSE_BYTES
+        root = write_files(self.tmp.name, {"real.py": "def real(): pass\n",
+                                           "huge.py": "def huge(): pass\n" + "x = 1\n" * (MAX_PARSE_BYTES // 6 + 10)})
+        outside = write_files(Path(self.tmp.name).parent / (Path(self.tmp.name).name + "-outside"),
+                              {"secret_thing.py": "def leaked(): pass\n"})
+        try:
+            os.symlink(outside / "secret_thing.py", root / "link.py")
+        except (OSError, NotImplementedError):
+            pass  # no permission to make symlinks here (Windows without developer mode)
+        try:
+            index = Repo(root).index
+            self.assertNotIn("link.py", index.files)
+            self.assertEqual(index.files["huge.py"][4], [])  # too big to read: listed, no definitions
+            self.assertIn("real", index.find_symbol("real"))
+        finally:
+            shutil.rmtree(outside, ignore_errors=True)
+
+
+class TestHandingOverTheCode(IndexCase):
+    FILES = {
+        "app/billing.py": "TAX = 18\n\n\ndef compute_invoice_total(items, gst=0.18):\n    total = sum(items)\n"
+                          "    return total * (1 + gst)\n\n\ndef unrelated(): pass\n",
+        "app/cart.py": "class Cart:\n    def total(self):\n        return 0\n",
+        "app/big.py": "class Everything:\n" + "    def m(self): pass\n" * 100,
+        "app/make.py": "def make(): pass\n",
+    }
+
+    def test_best_definitions_are_functions_and_small_classes_not_constants_or_giants(self):
+        index = self.index(self.FILES)
+        best = index.best_definitions("The invoice total ignores GST. Change compute_invoice_total", limit=5)
+        self.assertEqual(best[0], ("app/billing.py", "compute_invoice_total", 4, 6))
+        self.assertNotIn("TAX", [b[1] for b in best])  # a constant is not code worth handing over
+        self.assertNotIn("Everything", [b[1] for b in best])  # 100 lines of class: the outline is better
+
+    def test_ordinary_words_are_not_taken_as_exact_names(self):
+        index = self.index(self.FILES)
+        # "make" and "print" are words here, not identifiers: they must not pull in a function called make().
+        self.assertEqual(index.best_definitions("make it print nicely"), [])
+        self.assertEqual(index.best_definitions("call make() again")[0][1], "make")  # but written as code, they count
+        self.assertEqual(index.best_definitions("Cart.total is wrong")[0][1], "Cart.total")
+
+    def test_excerpt_numbers_lines_cuts_long_ones_and_blanks_secrets(self):
+        index = self.index({**self.FILES, "app/keys.py": "def connect():\n    key = \"" + "sk-" + "a" * 30 + "\"\n    return key\n"})
+        self.assertEqual(index.excerpt("app/billing.py", 4, 6),
+                         "    4 def compute_invoice_total(items, gst=0.18):\n    5     total = sum(items)\n"
+                         "    6     return total * (1 + gst)")
+        cut = index.excerpt("app/big.py", 1, 101, max_lines=5)
+        self.assertEqual(len(cut.splitlines()), 6)
+        self.assertIn("(96 more lines; read_file app/big.py to see them)", cut)
+        self.assertNotIn("sk-aaaa", index.excerpt("app/keys.py", 1, 3))
+
+    def test_a_roomy_build_is_handed_the_code_up_front(self):
+        from taskmind.builder import Workspace, build
+        root = write_files(self.tmp.name, self.FILES)
+        for i in range(8):
+            write_files(root, {f"util/helper{i}.py": f"def helper{i}(): pass\n"})
+        events = []
+        llm = FakeLLM(tool_call("finish", summary="Looked.", check_command=f"{PY} -c \"pass\""))
+        llm.context_budget = 200_000  # a roomy provider
+        build(llm, "Fix compute_invoice_total", Workspace(root), on_event=lambda k, **i: events.append((k, i)))
+        goal = llm.calls[0]["messages"][1]["content"]
+        self.assertIn("The code of the best-matching definitions", goal)
+        self.assertIn("--- app/billing.py: compute_invoice_total ---\n    4 def compute_invoice_total", goal)
+        context = next(i for k, i in events if k == "context")
+        self.assertEqual(context["index"]["shown"][0], "app/billing.py:compute_invoice_total")
+        self.assertEqual(llm.calls[0]["kw"]["max_tokens"], 16000)
+
+    def test_tight_free_tiers_get_pointers_not_code(self):
+        from taskmind.builder import Workspace, build
+        root = write_files(self.tmp.name, self.FILES)
+        for i in range(8):
+            write_files(root, {f"util/helper{i}.py": f"def helper{i}(): pass\n"})
+        llm = FakeLLM(tool_call("finish", summary="Looked.", check_command=f"{PY} -c \"pass\""))
+        llm.context_budget = 9000  # Groq-sized
+        build(llm, "Fix compute_invoice_total", Workspace(root))
+        goal = llm.calls[0]["messages"][1]["content"]
+        self.assertIn("compute_invoice_total (line 4)", goal)
+        self.assertNotIn("The code of the best-matching definitions", goal)
+
+
+class TestStepLimits(unittest.TestCase):
+    def test_roomy_providers_get_more_steps_than_tight_ones(self):
+        from taskmind.builder import Workspace, build
+        for budget, expected in ((9000, 40), (200_000, 60)):
+            llm = FakeLLM(*[tool_call("list_files", path=f"d{i}") for i in range(70)])
+            llm.context_budget = budget
+            with TempDir() as tmp:
+                report = build(llm, "Look around", Workspace(build_repo(Path(tmp) / "p")))
+            self.assertEqual(report["steps"], expected)
+
+
+class TestRunningOutOfSteps(unittest.TestCase):
+    def ws(self, tmp, with_tests):
+        from taskmind.builder import Workspace
+        return Workspace(build_repo(Path(tmp) / "p", with_tests=with_tests))
+
+    def test_unfinished_work_is_checked_anyway_and_the_result_says_so(self):
+        from taskmind.builder import build
+        test = "import unittest, calc\n\nclass T(unittest.TestCase):\n    def test_add(self):\n" \
+               "        self.assertEqual(calc.add(2, 3), 5)\n"
+        llm = FakeLLM(tool_call("edit_file", path="calc.py", old="a - b", new="a + b"),
+                      tool_call("write_file", path="test_calc.py", content=test), tool_call("list_files", path="x"))
+        with TempDir() as tmp:
+            report = build(llm, "Fix add", self.ws(tmp, False), max_steps=3)
+        self.assertEqual(report["status"], "unfinished")  # never claimed as done
+        self.assertIn("checks pass with the work so far", report["note"])
+        self.assertIn("unittest", report["check"])
+
+    def test_unfinished_work_that_fails_its_checks_says_that_too(self):
+        from taskmind.builder import build
+        llm = FakeLLM(tool_call("write_file", path="notes.md", content="x\n"), tool_call("list_files", path="x"))
+        with TempDir() as tmp:
+            ws = self.ws(tmp, True)
+            (ws.root / "test_calc.py").write_text("import unittest, calc\n\nclass T(unittest.TestCase):\n"
+                                                  "    def test_add(self):\n        self.assertEqual(calc.add(2, 3), 5)\n")
+            report = build(llm, "Fix add", ws, max_steps=2)
+        self.assertEqual(report["status"], "unfinished")
+        self.assertIn("don't pass yet", report["note"])
+
+
+class TestIndexQueries(IndexCase):
+    SHOP = {
+        "services/billing/invoice.py": "TAX = 18\n\ndef compute_invoice_total(items, gst=0.18):\n    return sum(items)\n",
+        "services/billing/tax.py": "from services.billing.invoice import compute_invoice_total\n\n"
+                                   "class TaxReport:\n    def build(self): pass\n\ndef tax_for(items):\n    return 1\n",
+        "services/cart/cart.py": "from services.billing.invoice import compute_invoice_total\n\nclass Cart:\n"
+                                 "    def add(self, item): pass\n    def total(self): pass\n",
+        "services/auth/login.py": "def login(user, password): pass\n\ndef logout(user): pass\n",
+        "web/static/site.js": "export function renderCart() {}\n",
+    }
+
+    def test_find_symbol(self):
+        index = self.index(self.SHOP)
+        found = index.find_symbol("compute_invoice_total")
+        self.assertIn("services/billing/invoice.py:3 function compute_invoice_total", found)
+        self.assertIn("imported by 2 files: services/billing/tax.py, services/cart/cart.py", found)
+        self.assertIn("services/cart/cart.py:5 method Cart.total", index.find_symbol("Cart.total"))
+        self.assertIn("class Cart", index.find_symbol("cart"))  # case doesn't matter
+        partial = index.find_symbol("invoice")  # no exact match: names that contain it
+        self.assertIn("Names that contain it", partial)
+        self.assertIn("compute_invoice_total", partial)
+        self.assertIn("try search_code", index.find_symbol("zzz_nothing"))
+
+    def test_outline_lists_definitions_and_links(self):
+        index = self.index(self.SHOP)
+        out = index.outline("services/cart/cart.py")
+        self.assertIn("services/cart/cart.py  (", out)
+        self.assertIn("class Cart", out)
+        self.assertIn("  method total", out)
+        self.assertIn("imports 1: services/billing/invoice.py", out)
+        self.assertIn("imported by 2: services/billing/tax.py, services/cart/cart.py",
+                      index.outline("services/billing/invoice.py"))
+        self.assertIn("Did you mean: services/auth/login.py", index.outline("login.py"))
+
+    def test_relevant_files_for_a_plain_request(self):
+        index = self.index(self.SHOP)
+        top = [p for p, _ in index.relevant("the invoice total ignores GST for some orders")]
+        self.assertEqual(top[0], "services/billing/invoice.py")
+        names = dict(index.relevant("fix compute_invoice_total"))
+        self.assertEqual(names["services/billing/invoice.py"], [("compute_invoice_total", 3)])  # written exactly
+        self.assertEqual(index.relevant("login with a wrong password")[0][0], "services/auth/login.py")
+        self.assertEqual(index.relevant("make everything better please"), [])  # nothing to go on: say nothing
+        skipped = [p for p, _ in index.relevant("invoice total", exclude={"services/billing/invoice.py"})]
+        self.assertNotIn("services/billing/invoice.py", skipped)
+
+    def test_rare_words_count_for_more_than_common_ones(self):
+        files = {f"app/handler{i}.py": f"def handle_request_{i}(): pass\n" for i in range(12)}
+        files["app/zebra.py"] = "def zebra_stripes(): pass\n"
+        index = self.index(files)
+        self.assertEqual(index.relevant("handle the request for zebra stripes")[0][0], "app/zebra.py")
+
+    def test_map_lists_the_most_imported_files_first_and_stays_in_budget(self):
+        index = self.index(self.SHOP)
+        text = index.map_text(limit=2000)
+        self.assertTrue(text.startswith("5 code files. Folders:"))
+        lines = text.splitlines()
+        self.assertIn("services/billing/invoice.py [imported by 2]", lines[2])
+        self.assertIn("compute_invoice_total", lines[2])
+        self.assertLessEqual(len(index.map_text(limit=300)), 330)
+
+
+class TestBigProjects(IndexCase):
+    def test_every_file_is_listed_not_just_the_first_five_thousand(self):
+        # Seen with a 12,000-file repo: everything after the 5,000th name alphabetically was invisible.
+        files = {f"a/f{i}.py": "x = 1\n" for i in range(5200)}
+        write_files(self.tmp.name, files)
+        write_files(self.tmp.name, {"zz/last.py": "def at_the_end(): pass\n"})
+        repo = Repo(self.tmp.name)
+        self.assertEqual(len(repo.files()), 5201)
+        self.assertEqual(repo.truncated, 0)
+        self.assertIn("zz/last.py", repo.search("at_the_end"))
+
+    def test_when_a_cap_does_apply_it_is_said_out_loud(self):
+        from taskmind import repo_tools
+        write_files(self.tmp.name, {f"f{i}.py": "x = 1\n" for i in range(30)})
+        with mock.patch.object(repo_tools, "MAX_FILES", 10):
+            repo = Repo(self.tmp.name)
+            self.assertEqual(len(repo.files()), 10)
+            self.assertEqual(repo.truncated, 20)
+            self.assertIn("Only the first 10 of 30 files are listed", repo.tree(max_entries=100))
+
+    def test_a_huge_search_stops_and_says_so(self):
+        from taskmind import repo_tools
+        write_files(self.tmp.name, {"a.py": "needle = 1\n"})
+        with mock.patch.object(repo_tools, "SEARCH_SECONDS", -1):
+            self.assertIn("Search stopped after -1s", Repo(self.tmp.name).search("needle"))
+
+    def test_indexing_stays_fast_as_projects_grow(self):
+        root = code_project(self.tmp.name, 1500)
+        started = time.monotonic()
+        index = Repo(root).index
+        built = time.monotonic() - started
+        started = time.monotonic()
+        Repo(root).index  # unchanged: nothing is read again
+        again = time.monotonic() - started
+        self.assertEqual(index.summary()["files"], 1500)
+        self.assertEqual(index.summary()["links"], 1499)
+        self.assertLess(built, 30)  # about a second on a laptop; generous for slow CI machines
+        self.assertLess(again, 10)
+        self.assertIn("imported by 1 file: pkg/mod1.py", index.find_symbol("fn0"))
+
+
+class TestIndexTools(IndexCase):
+    def test_lookup_tools_only_for_projects_that_need_them(self):
+        from taskmind.repo_tools import TOOL_SPECS, tool_specs
+        small = Repo(code_project(Path(self.tmp.name) / "small", 5))
+        big = Repo(code_project(Path(self.tmp.name) / "big", 40))
+        self.assertEqual(tool_specs(small), TOOL_SPECS)
+        self.assertEqual([t["function"]["name"] for t in tool_specs(big)][-2:], ["find_symbol", "file_outline"])
+        with mock.patch.dict(os.environ, {"TASKMIND_INDEX": "off"}):
+            self.assertEqual(tool_specs(big), TOOL_SPECS)  # the escape hatch
+
+    def test_the_ai_can_call_them(self):
+        from taskmind.repo_tools import dispatch
+        repo = Repo(code_project(self.tmp.name, 40))
+        self.assertIn("pkg/mod7.py:3 function fn7", dispatch(repo, "find_symbol", {"name": "fn7"}))
+        self.assertIn("function fn7", dispatch(repo, "file_outline", {"path": "pkg/mod7.py"}))
+        self.assertIn("imports 1: pkg/mod6.py", dispatch(repo, "file_outline", {"file": "pkg/mod7.py"}))
+
+    def test_exploring_agents_are_offered_the_tools(self):
+        repo = Repo(code_project(self.tmp.name, 40))
+        llm = FakeLLM(find_symbol_call("fn3"), "done")
+        run_tool_agent(llm, "sys", "Find fn3", repo)
+        self.assertIn("find_symbol", [t["function"]["name"] for t in llm.calls[0]["tools"]])
+        self.assertIn("pkg/mod3.py", llm.calls[1]["messages"][-1]["content"])
+
+    def test_a_build_starts_with_the_map_and_the_likely_files(self):
+        from taskmind.builder import Workspace, build
+        root = write_files(self.tmp.name, TestIndexQueries.SHOP)
+        for i in range(4):  # a project big enough for a map
+            write_files(root, {f"util/helper{i}.py": f"def helper{i}(): pass\n"})
+        events = []
+        llm = FakeLLM(tool_call("finish", summary="Looked.", check_command=f"{PY} -c \"pass\""))
+        build(llm, "The invoice total ignores GST", Workspace(root), on_event=lambda k, **i: events.append((k, i)))
+        goal = llm.calls[0]["messages"][1]["content"]
+        self.assertIn("Project map, computed by TaskMind", goal)
+        self.assertIn("services/billing/invoice.py [imported by 2]", goal)
+        self.assertIn("Files this request probably concerns", goal)
+        self.assertIn("  services/billing/invoice.py", goal.split("probably concerns")[1])
+        kinds = [k for k, _ in events]
+        self.assertEqual(kinds[0], "indexing")  # first time: say that it's reading everything
+        context = next(i for k, i in events if k == "context")
+        self.assertEqual(context["index"]["files"], 9)
+        self.assertEqual(context["index"]["relevant"][0], "services/billing/invoice.py")
+
+    def test_small_projects_get_no_map_and_a_second_build_does_not_say_indexing(self):
+        from taskmind.builder import Workspace, build
+        root = build_repo(Path(self.tmp.name) / "tiny")
+        llm = FakeLLM(tool_call("finish", summary="Looked.", check_command=f"{PY} -c \"pass\""))
+        build(llm, "Fix add", Workspace(root))
+        self.assertNotIn("Project map", llm.calls[0]["messages"][1]["content"])
+        big = code_project(Path(self.tmp.name) / "big", 12)
+        for _ in range(2):
+            events = []
+            build(FakeLLM(tool_call("finish", summary="x", check_command=f"{PY} -c \"pass\"")), "Look", Workspace(big),
+                  on_event=lambda k, **i: events.append(k))
+        self.assertNotIn("indexing", events)  # the saved index was there the second time
+
+    def test_what_the_ai_writes_is_findable_straight_away(self):
+        from taskmind.builder import Workspace, build
+        root = code_project(self.tmp.name, 40)
+        llm = FakeLLM(tool_call("write_file", path="pkg/fresh.py", content="def brand_new_thing():\n    return 1\n"),
+                      find_symbol_call("brand_new_thing"),
+                      tool_call("finish", summary="Done.", check_command=f"{PY} -c \"pass\""))
+        build(llm, "Add a function", Workspace(root))
+        answer = [m for m in llm.calls[2]["messages"] if m["role"] == "tool"][-1]["content"]
+        self.assertIn("pkg/fresh.py:1 function brand_new_thing", answer)
+        offered = [t["function"]["name"] for t in llm.calls[0]["tools"]]
+        self.assertTrue({"write_file", "run_command", "find_symbol", "file_outline"} <= set(offered))
+
+    def test_init_studies_big_projects_with_the_map(self):
+        from taskmind import project
+        repo = Repo(code_project(self.tmp.name, 40))
+        llm = FakeLLM(json.dumps({"notes": "# pkg\nA chain of modules.\n"}))
+        project.write_notes(llm, repo)
+        self.assertIn("Project map, computed by TaskMind", llm.calls[0]["messages"][1]["content"])
+
+
+class TestIndexCLI(TestCLI):
+    def setUp(self):
+        super().setUp()
+        self.cwd = os.getcwd()
+        self.root = code_project(Path(self.tmp.name) / "idxproj", 12)
+        os.chdir(self.root)
+
+    def tearDown(self):
+        os.chdir(self.cwd)
+        super().tearDown()
+
+    def test_summary_find_outline_and_rebuild(self):
+        code, out = self.run_cli("index")
+        self.assertEqual(code, 0, out)
+        self.assertIn("12 code files (12 python)", out)
+        self.assertIn("12 definitions, 11 links between files", out)
+        self.assertIn("built just now", out)
+        self.assertIn("project map", out)
+        code, out = self.run_cli("index")
+        self.assertIn("up to date", out)
+        code, out = self.run_cli("index", "--find", "fn5")
+        self.assertIn("pkg/mod5.py:3 function fn5", out)
+        code, out = self.run_cli("index", "--outline", "pkg/mod5.py")
+        self.assertIn("imports 1: pkg/mod4.py", out)
+        code, out = self.run_cli("index", "--rebuild")
+        self.assertIn("built just now", out)
+
+    def test_not_a_code_project(self):
+        empty = Path(self.tmp.name) / "docs"
+        empty.mkdir()
+        (empty / "notes.txt").write_text("hi", encoding="utf-8")
+        os.chdir(empty)
+        code, out = self.run_cli("index")
+        self.assertEqual(code, 1)
+        self.assertIn("No code files found here", out)

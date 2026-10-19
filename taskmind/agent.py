@@ -3,7 +3,7 @@
 import json
 
 from taskmind.llm import RequestTooLarge, ToolCallError, chat_without_tools
-from taskmind.repo_tools import TOOL_SPECS, Repo, dispatch
+from taskmind.repo_tools import Repo, dispatch, tool_specs
 
 TRIMMED = "[older tool output removed to save tokens]"
 REPEATED = "You already made this exact call. Use what you learned, or try something else."
@@ -22,14 +22,14 @@ def _compact(messages, budget):
             msg["content"] = TRIMMED
 
 
-def _chat_within_budget(llm, messages, budget, **kw):
+def _chat_within_budget(llm, messages, budget, tools, **kw):
     """Call the model, shrinking the conversation if the provider says it is too large,
     and retrying once if the model garbles a tool call."""
     retried = False
     while True:
         _compact(messages, budget)
         try:
-            return llm.chat(messages, tools=TOOL_SPECS, **kw)
+            return llm.chat(messages, tools=tools, **kw)
         except RequestTooLarge:
             if budget <= 4000:
                 raise
@@ -81,9 +81,10 @@ def run_tool_agent(llm, system, user, repo: Repo, explore_hint="", max_steps=10,
     first = f"{user}\n\n{explore_hint}" if explore_hint else user
     messages = [{"role": "system", "content": system}, {"role": "user", "content": first}]
     seen = set()
+    tools = tool_specs(repo)
     for step in range(max_steps):
         try:
-            reply = _chat_within_budget(llm, messages, budget, max_tokens=1000)
+            reply = _chat_within_budget(llm, messages, budget, tools, max_tokens=1000)
         except ToolCallError:
             if not seen:
                 raise  # nothing explored yet; the caller has its own fallback

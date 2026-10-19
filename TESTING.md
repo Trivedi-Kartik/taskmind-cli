@@ -229,7 +229,7 @@ git add . && git commit -qm "Notes app" && echo ready
 
 | ID | Steps | Expect |
 |---|---|---|
-| P1 | `python3 scripts/build.py`, then `python3 dist/taskmind.pyz --version` and `python3 dist/taskmind.pyz help reminders` | taskmind 0.6.0, and the help works from the single file |
+| P1 | `python3 scripts/build.py`, then `python3 dist/taskmind.pyz --version` and `python3 dist/taskmind.pyz help reminders` | taskmind 0.7.0, and the help works from the single file |
 | P2 (optional) | If you have pipx: `pipx install /home/user/kartik/folder` then `tm --version` in a new terminal | The `tm` command works from anywhere |
 | P3 | In a new project folder (any `git init` folder with a file), `tm add "x"` then `tm go <id>` | First it asks "Allow this for this project?", naming your AI provider; answer **n**: "nothing was sent". Run again and answer y: it doesn't ask a third time |
 | P4 | `tm report-bug "testing the report"` | A saved report file; open it: version, system, provider name, recent errors, and **no API key** |
@@ -260,6 +260,17 @@ git add -A && git commit -qm "start"
 | Q11 | Edit a file without committing, then `tm build "anything"` | It lists your change and offers to save it for you; answer y and the build goes ahead |
 | Q12 | `cd ~/tm-tests && tm build --new page-test "a one-page site with a button that counts clicks"` | The output shows "open the page in a hidden browser" and "Checked by TaskMind: ... browser check" |
 | Q8 | Try it on a real project of yours, with a small real task | Honest question: did you keep the result? How long did it take? Was anything wrong? (This is the most useful feedback of all) |
+
+## U. The code index (big projects)
+
+| ID | Steps | Expect |
+|---|---|---|
+| U1 | In a project with 30+ code files (e.g. `cd ~/kartik/folder`): `tm index` | File and definition counts, links between files, the most-imported files, and "Builds here get a project map and the find_symbol / file_outline tools" |
+| U2 | `tm index` again right away | "up to date" and under a second |
+| U3 | `tm index --find <a function you know>` and `tm index --outline <a file you know>` | The right file and line; the outline lists the file's definitions, what it imports and what imports it |
+| U4 | `tm build "<a small change to something you know>"` in that project | `🗺 Code index`, `🎯 Probably relevant` (are they right?) and `📄 Handed to the AI up front` lines appear before the first 🔍 step |
+| U5 | The same request with `TASKMIND_INDEX=off tm build "..."` (use `tm build --undo` between runs) | No index lines. Compare how many 🔍 steps each run needed and whether it finished: your own measurement |
+| U6 | In a project with fewer than 8 code files (the cafe site): `tm build "..."` | No index lines: small projects don't need one |
 
 ## T. Follow-ups
 

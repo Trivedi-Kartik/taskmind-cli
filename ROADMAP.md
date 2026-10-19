@@ -40,8 +40,10 @@ What's measured from now on is **whether real tasks get done**, graded by checks
       or limits, on the same branch
 - [ ] **3b. `tm chat`:** a back-and-forth session in a project, where every change is still
       tested and undoable (follow-ups without retyping `tm build --more`)
-- [ ] **4. Big projects:** a saved index of the codebase (files, symbols, what imports what),
-      refreshed on change, so the AI finds things in one step instead of ten
+- [x] **4. Big projects:** a saved index of the codebase (definitions with lines, what imports
+      what), refreshed on change; builds start with the project map, the likely files and the code
+      of the best-matching functions. One task: 25 steps instead of 44. Still to do: more
+      measurements on more projects and languages, and import links for Go, Rust and Java
 
 **Next ideas, found while testing (after 4):**
 

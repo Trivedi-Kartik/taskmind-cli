@@ -185,6 +185,49 @@ tm build --more          # pick up an unfinished build
 If you edited files by hand on an unfinished build's branch, TaskMind offers to keep your edits
 as part of the work. Every round is still checked, and `tm build --undo` takes back the last one.
 
+### Big projects: the code index
+
+In a project with 8 or more code files, TaskMind keeps an index of the code (outside your project,
+in `~/.taskmind`, refreshed by reading only the files that changed). It records every function,
+class, method and constant with its line numbers, and which files import which (Python,
+JavaScript/TypeScript and HTML; other languages get definitions only). Secret files are never indexed
+and no code is stored, only names and line numbers.
+
+Each build starts with what the index knows, worked out by TaskMind itself with no extra AI request:
+
+```
+  🗺  Code index: 1,240 files, 9,800 definitions
+  🎯 Probably relevant: services/billing/invoice.py, services/billing/tax.py
+  📄 Handed to the AI up front: services/billing/invoice.py:compute_invoice_total
+```
+
+- **A map** of the project's most connected files and their main definitions.
+- **The files your request probably concerns**, matched from the names in your words, with the
+  matching definitions and their lines. Names written like code (`compute_total`, `Cart.total`, or
+  anything in backticks) count most.
+- **The code of the best-matching functions**, on providers with room for it, so the AI starts from it
+  instead of searching.
+- **`find_symbol` and `file_outline` tools** for the AI (30+ code files): where something is defined and
+  who imports it, and a file's structure, in one step.
+
+```sh
+tm index                        # what TaskMind knows: files, definitions, links, most-imported files
+tm index --find compute_total   # where it's defined, and who uses that file
+tm index --outline src/app.py   # a file's definitions, imports and importers
+tm index --rebuild              # throw the saved index away and read everything again
+```
+
+It also fixed a real blind spot: TaskMind used to list only the first 5,000 files of a project, so in a
+12,000-file repository whole folders were invisible and searching them found nothing. Now every file is
+listed, and a search that takes over 8 seconds stops and says so.
+
+**Measured, honestly:** the same change to TaskMind itself (36 files, 12,000 lines) with Gemini Flash Lite.
+With the index off the AI used 44 search/read steps and 12 test runs and ran out of steps in just under
+10 minutes; with it on, 25 steps and 2 test runs, finished and checked in 3.5 minutes. That's one run each:
+a sign, not a proof. An earlier version that only *offered* lookup tools made no difference, because the
+model never called them; handing over the code is what helped. Switch the index off with
+`TASKMIND_INDEX=off` to compare on your own project.
+
 ### Working on an existing project
 
 **Project notes.** Every build first reads the notes a project keeps for AI tools:
@@ -310,6 +353,7 @@ shows every option.
 |---|---|
 | `tm build "..." \| <id>` | Build it ([details](#build-it-tm-build)); `@file` mentions; `--more`, `--new`, `--check`, `--undo`, `--simple`, `--voice`, `-y` |
 | `tm init` | Study this project and write `TASKMIND.md`, the notes every build reads first |
+| `tm index` | The code index of this project; `--find NAME`, `--outline FILE`, `--rebuild` ([details](#big-projects-the-code-index)) |
 | `tm add "title"` | Write a task down (`--due friday`, `-p high`, `--remind "tomorrow 9am"`, `--no-repo`, `--voice`) |
 | `tm list` / `tm show <id>` / `tm today` | Your tasks / everything about one / what to do today (`--speak` reads it out) |
 | `tm go <id>` | Questions, code analysis, security check and steps (`--redo`, `--voice`) |
@@ -391,6 +435,7 @@ instead. `tm show <id>` lists which AI did what.
 | "still on an unfinished build" | Answer y to throw it away, or `tm build --undo` |
 | A build went wrong | `tm build --undo` puts the folder back as it was |
 | A build stopped part-way (limit reached, Ctrl+C) | `tm build --more` continues it |
+| The index looks wrong or out of date | `tm index --rebuild`; or `TASKMIND_INDEX=off` to run without it |
 | "doesn't understand: ..." | Put text with spaces in quotes |
 | Every provider failed | `tm doctor --all` shows which one and why |
 | "Something went wrong inside TaskMind" | A bug: `tm report-bug`. Your tasks are safe (daily backups) |
@@ -400,7 +445,7 @@ instead. `tm show <id>` lists which AI did what.
 ## Development
 
 ```sh
-python3 -m unittest discover -s tests     # 325 unit tests, no AI calls, no dependencies
+python3 -m unittest discover -s tests     # 372 unit tests, no AI calls, no dependencies
 python3 tests/live_smoke.py               # every command end to end, with your real AI provider
 python3 scripts/build.py                  # refresh the bundled guide, build dist/taskmind.pyz
 ```

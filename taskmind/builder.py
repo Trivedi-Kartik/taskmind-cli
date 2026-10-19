@@ -23,7 +23,7 @@ from pathlib import Path
 from taskmind.agent import TRIMMED
 from taskmind.llm import LLMError, RequestTooLarge, ToolCallError
 from taskmind.repo_tools import TOOL_SPECS as READ_TOOLS
-from taskmind.repo_tools import Repo, dispatch
+from taskmind.repo_tools import Repo, dispatch, tool_specs
 from taskmind import project, webcheck
 from taskmind.secrets import is_secret_file, redact
 
@@ -180,6 +180,12 @@ WRITE_TOOLS = [
 TOOLS = [t for t in READ_TOOLS if t["function"]["name"] != "recent_commits"] + WRITE_TOOLS
 
 
+def tools_for(repo) -> list:
+    """The builder's tools, with the code-index lookups added for projects big enough to want them."""
+    extra = [t for t in tool_specs(repo) if t not in READ_TOOLS]
+    return TOOLS + extra
+
+
 class Workspace:
     """The project folder, with the abilities the build agent gets: read, write, run."""
 
@@ -235,7 +241,7 @@ class Workspace:
 
     def _touched(self, path):
         self.changed.add(path.relative_to(self.root).as_posix())
-        self.repo._files = None  # the file list changed
+        self.repo.touch()  # the file list changed, and so does the code index
 
     def run(self, command) -> str:
         risk, reason = command_risk(command)
@@ -246,7 +252,7 @@ class Workspace:
                 return "The user said no to this command. Find another way, or finish without it."
             self.approved.add(command)
         code, output = run_shell(command, self.root, self.timeout)
-        self.repo._files = None
+        self.repo.touch()
         return f"exit code {code}\n{output}"
 
     def changed_tests(self) -> list:
@@ -309,8 +315,10 @@ If the request is short or vague, first decide what a real, complete version inc
 markup, and the polish asked for, such as modern animations).
 
 How to work:
-1. Look first: start from the project notes and any files the user pointed at (given with the task), \
-then list and read what else the task touches. Follow the project's existing style and its notes.
+1. Look first: start from the project notes, any files the user pointed at and the project map (given \
+with the task), then read what else the task touches. If find_symbol and file_outline are offered, use \
+them to locate code by name and to see a file's structure before reading it. Follow the project's \
+existing style and its notes.
 2. Make the change with write_file (new or small files) or edit_file (changes to big files).
 3. Add or update automated tests for the new behaviour, using the project's test setup \
 (none? use the language's built-in one, e.g. Python unittest, with no installs).
@@ -375,9 +383,6 @@ def _compact(messages, budget, keep=6):
                 m.pop("_raw", None)  # Claude's raw blocks would resend the full text
 
 
-TOOL_NAMES = ", ".join(t["function"]["name"] for t in TOOLS)
-
-
 def _finish_in_text(text):
     """finish's arguments written as a JSON reply instead of a tool call, or None."""
     from taskmind.llm import extract_object
@@ -388,14 +393,14 @@ def _finish_in_text(text):
     return data if isinstance(data, dict) and ("summary" in data or "check_command" in data) else None
 
 
-def _chat(llm, messages, budget, max_tokens):
+def _chat(llm, messages, budget, max_tokens, tools):
     """One model turn. A garbled tool call (open models sometimes invent tools) is retried
     right here, so the build keeps its progress instead of starting over elsewhere."""
     failures = 0
     while True:
         _compact(messages, budget)
         try:
-            return llm.chat(messages, tools=TOOLS, max_tokens=max_tokens)
+            return llm.chat(messages, tools=tools, max_tokens=max_tokens)
         except RequestTooLarge:
             if budget <= 4000:
                 raise
@@ -406,10 +411,11 @@ def _chat(llm, messages, budget, max_tokens):
                 raise
             if failures == 2:
                 messages.append({"role": "user", "content": f"Your last tool call was invalid. Call exactly "
-                                                            f"one of these tools: {TOOL_NAMES}."})
+                                                            f"one of these tools: "
+                                                            f"{', '.join(t['function']['name'] for t in tools)}."})
 
 
-def build(llm, task, ws: Workspace, check="", max_steps=40, fix_rounds=3, language="auto", simple=False,
+def build(llm, task, ws: Workspace, check="", max_steps=None, fix_rounds=3, language="auto", simple=False,
           on_event=None, budget=None, browser=None, earlier="") -> dict:
     """Do the task in the workspace. Returns a report:
 
@@ -420,6 +426,8 @@ def build(llm, task, ws: Workspace, check="", max_steps=40, fix_rounds=3, langua
     event = on_event or (lambda kind, **info: None)
     budget = budget or max(getattr(llm, "context_budget", 9000), 9000)
     # Groq's free tier counts the reserved reply against 8k tokens a minute, so stay modest there.
+    if max_steps is None:  # roomy providers explore more and write more; small free tiers stay lean
+        max_steps = 40 if budget < 100_000 else 60
     max_tokens = 4000 if budget <= 9000 else 8000 if budget < 100_000 else 16000
     if budget >= 100_000:  # e.g. Gemini, Claude: read whole files, write big ones
         ws.max_chars, ws.max_lines = 24_000, 800
@@ -442,14 +450,20 @@ def build(llm, task, ws: Workspace, check="", max_steps=40, fix_rounds=3, langua
     attached_text, attached = project.attachments(ws.repo, task, limit=budget // 3)
     if attached_text:
         goal += "\n\nFiles and folders the user pointed at (start from these):\n\n" + attached_text
-    event("context", notes=[name for name, _ in notes], attached=attached)
+    code_text, code_info = project.code_context(ws.repo, task, limit=min(8000, budget // 6),
+                                                focus=[a for a in attached if not a.endswith("/")], event=event,
+                                                excerpt_chars=min(8000, budget // 12))
+    if code_text:
+        goal += "\n\n" + code_text
+    tools = tools_for(ws.repo)
+    event("context", notes=[name for name, _ in notes], attached=attached, index=code_info)
     messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": goal}]
     report = {"status": "unfinished", "summary": "", "check": known_check, "check_output": "", "steps": 0,
               "rounds": 0}
     nudged, empties = False, 0
     for step in range(max_steps):
         report["steps"] = step + 1
-        reply = _chat(llm, messages, budget, max_tokens)
+        reply = _chat(llm, messages, budget, max_tokens, tools)
         calls = reply.get("tool_calls") or []
         finished = None
         if not calls:
@@ -554,9 +568,26 @@ def build(llm, task, ws: Workspace, check="", max_steps=40, fix_rounds=3, langua
                                    "run the tests, then call finish again.")
     report["changed"] = sorted(ws.changed)
     report["changed_tests"] = ws.changed_tests()
+    if report["status"] == "unfinished" and ws.changed:
+        _check_unfinished_work(ws, report, known_check)
     if not ws.changed and report["status"] in ("unverified", "unfinished"):
         report["status"] = "nothing"  # don't call it "built" when nothing was written
     return report
+
+
+def _check_unfinished_work(ws, report, known_check):
+    """The AI ran out of steps. Seen live: it had finished and the tests passed at step 39 of 40,
+    then the result was only "not finished". Run the project's own check anyway and say what it found."""
+    command = known_check or detect_check(ws.root)
+    if not command or command_risk(command)[0] != "ok":
+        return
+    code, output = run_shell(command, ws.root, ws.timeout)
+    report["check"], report["check_output"] = command, output
+    report["note"] = (f"The AI ran out of steps before it said it was done, but the project's checks pass with the "
+                      f"work so far ({command}), so it may be complete. Look at it, or let the AI wrap up: "
+                      f"tm build --more" if code == 0 else
+                      f"The AI ran out of steps, and the project's checks ({command}) don't pass yet. "
+                      f"tm build --more lets it carry on.")
 
 
 # Git: a branch for the work, a commit for the result

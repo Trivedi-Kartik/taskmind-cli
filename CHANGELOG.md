@@ -2,6 +2,19 @@
 
 Update with `tm update`. Your tasks, settings and keys are kept.
 
+## 0.7.0 (2026-10-19)
+
+- **The code index for big projects.** TaskMind keeps a map of your code (definitions with line
+  numbers, who imports what) and every build starts with it: the project map, the files your request
+  probably concerns, and the code of the best-matching functions. `tm index` shows it;
+  `--find` and `--outline` look things up. Measured on one task: 25 steps instead of 44, finished
+  instead of running out of steps.
+- **Fixed: big projects were partly invisible.** Only the first 5,000 files were listed; in a
+  12,000-file repository whole folders could not be seen or searched. Every file is listed now,
+  and searches over huge projects stop after 8 seconds and say so.
+- When the AI runs out of steps, TaskMind now runs the project's own checks and tells you whether
+  the work so far passes, instead of only saying "not finished". Providers with room get 60 steps (was 40).
+
 ## 0.6.0 (2026-10-19)
 
 - **Follow-ups:** `tm build --more "make the button bigger"` continues from the last build and

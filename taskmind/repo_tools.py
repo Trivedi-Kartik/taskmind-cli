@@ -8,6 +8,7 @@ import fnmatch
 import os
 import re
 import subprocess
+import time
 from pathlib import Path
 
 from taskmind.secrets import is_secret_file, redact
@@ -22,9 +23,10 @@ SKIP_SUFFIXES = {
     ".tar", ".jar", ".so", ".dll", ".exe", ".bin", ".lock", ".min.js", ".map", ".woff",
     ".woff2", ".ttf", ".mp4", ".mp3", ".pyc", ".class", ".db", ".sqlite",
 }
-MAX_FILES = 5000
+MAX_FILES = 100_000        # listing names is cheap; the old 5,000 cut silently hid whole folders
 MAX_FILE_BYTES = 400_000
 MAX_TOOL_CHARS = 3000
+SEARCH_SECONDS = 8         # a search over a huge repo stops here and says so
 
 
 class Repo:
@@ -34,6 +36,9 @@ class Repo:
             raise ValueError(f"Repo path does not exist: {self.root}")
         self.is_git = self._git("rev-parse", "--is-inside-work-tree", check=False).strip() == "true"
         self._files = None
+        self.truncated = 0   # files beyond MAX_FILES that aren't listed (0: all are)
+        self._index = None
+        self._index_stale = False
 
     def _git(self, *args, check=True) -> str:
         try:
@@ -68,24 +73,54 @@ class Repo:
                 for dirpath, dirnames, filenames in os.walk(self.root):
                     dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")]
                     rel = Path(dirpath).relative_to(self.root)
-                    names.extend(str(rel / f) if str(rel) != "." else f for f in filenames)
+                    names.extend((rel / f).as_posix() if str(rel) != "." else f for f in filenames)
                     if len(names) > MAX_FILES:
                         break
-            self._files = sorted(
+            listed = sorted(
                 n for n in names
                 if not any(n.endswith(s) for s in SKIP_SUFFIXES)
                 and not any(part in SKIP_DIRS for part in Path(n).parts)
                 and not is_secret_file(n)  # .env, keys, credentials: never shown to the AI
-            )[:MAX_FILES]
+            )
+            self.truncated = max(0, len(listed) - MAX_FILES)
+            self._files = listed[:MAX_FILES]
         return self._files
+
+    # The code index (taskmind/codeindex.py): built on first use, kept current by touch().
+
+    def touch(self):
+        """Files changed (the AI wrote or ran something): relist, and refresh the index on next use."""
+        self._files = None
+        self._index_stale = True
+
+    def code_file_count(self) -> int:
+        from taskmind.codeindex import language_of
+        return sum(1 for f in self.files() if language_of(f))
+
+    @property
+    def index(self):
+        from taskmind.codeindex import Index
+        if self._index is None:
+            self._index = Index.open(self)
+            self._index_stale = False
+        elif self._index_stale:
+            self._index.refresh()
+            self._index_stale = False
+        return self._index
+
+    def index_wanted(self, minimum) -> bool:
+        """Is a code index worth having here? Not for tiny projects, and not if switched off."""
+        return os.environ.get("TASKMIND_INDEX", "").lower() != "off" and self.code_file_count() >= minimum
 
     def tree(self, path=".", max_entries=200) -> str:
         prefix = "" if path in (".", "", "/") else path.strip("/") + "/"
         matches = [f for f in self.files() if f.startswith(prefix)]
         if not matches:
             return f"No files under '{path}'."
+        note = (f"\n(Only the first {MAX_FILES:,} of {MAX_FILES + self.truncated:,} files are listed; "
+                "name a folder to see inside it.)") if self.truncated else ""
         if len(matches) <= max_entries:
-            return "\n".join(matches)
+            return "\n".join(matches) + note
         # Too many files: summarize by directory instead.
         counts = {}
         for f in matches:
@@ -94,7 +129,7 @@ class Repo:
             counts[top] = counts.get(top, 0) + 1
         lines = [f"{prefix}{name}  ({n} files)" if name.endswith("/") else f"{prefix}{name}"
                  for name, n in sorted(counts.items())]
-        return f"{len(matches)} files; showing directories:\n" + "\n".join(lines[:max_entries])
+        return f"{len(matches)} files; showing directories:\n" + "\n".join(lines[:max_entries]) + note
 
     def search(self, pattern, glob=None, path=None, max_results=40) -> str:
         try:
@@ -103,7 +138,12 @@ class Repo:
             return f"Invalid regex: {exc}"
         prefix = "" if path in (None, "", ".", "/") else path.strip("/") + "/"
         hits = []
+        deadline = time.monotonic() + SEARCH_SECONDS
         for name in self.files():
+            if time.monotonic() > deadline:
+                return ("\n".join(hits) + "\n" if hits else "") + (
+                    f"(Search stopped after {SEARCH_SECONDS}s: the project is large. Narrow it with `path` "
+                    "or `glob`, or use find_symbol for names.)")
             if prefix and not name.startswith(prefix):
                 continue
             if glob and not fnmatch.fnmatch(name, glob) and not fnmatch.fnmatch(Path(name).name, glob):
@@ -224,6 +264,36 @@ TOOL_SPECS = [
 ]
 
 
+INDEX_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "find_symbol",
+            "description": "Where a function, class, method or constant is defined, from the code index: file, "
+                           "line and which files import it. One step instead of searching text. Accepts "
+                           "'name' or 'Class.method'; similar names are listed when there's no exact match.",
+            "parameters": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "file_outline",
+            "description": "A file's structure from the code index: every definition with its line number, "
+                           "what the file imports and which files import it. Use it before reading a big file.",
+            "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
+        },
+    },
+]
+
+
+def tool_specs(repo) -> list:
+    """The tools to offer for this repo: lookup tools join the list once the project is big enough
+    for them to pay for the tokens their descriptions use."""
+    from taskmind.codeindex import TOOLS_MIN_FILES
+    return TOOL_SPECS + INDEX_TOOLS if repo.index_wanted(TOOLS_MIN_FILES) else TOOL_SPECS
+
+
 def _arg(args, *names, default=None):
     """Models often guess argument names (line_start, start_line...); accept the common ones."""
     for name in names:
@@ -245,6 +315,10 @@ def dispatch(repo: Repo, name: str, args: dict, max_chars=MAX_TOOL_CHARS, max_li
             result = repo.read(_arg(args, "path", "file", "file_path"),
                                _arg(args, "start", "start_line", "line_start", "from_line", default=1),
                                _arg(args, "end", "end_line", "line_end", "to_line"), max_lines=max_lines)
+        elif name == "find_symbol":
+            result = repo.index.find_symbol(_arg(args, "name", "symbol", "query", default=""))
+        elif name == "file_outline":
+            result = repo.index.outline(_arg(args, "path", "file", "file_path", default=""))
         elif name == "recent_commits":
             commits = repo.log(min(int(args.get("n") or 15), 30))
             result = "\n".join(f"{c['sha'][:8]} {c['date'][:10]} {c['subject']}" for c in commits) or "No commits."

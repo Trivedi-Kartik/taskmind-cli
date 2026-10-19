@@ -89,6 +89,43 @@ def attachments(repo: Repo, text, limit=24_000) -> tuple:
     return "\n\n".join(parts), attached
 
 
+def code_context(repo: Repo, text, limit=4000, focus=(), event=None, excerpt_chars=0) -> tuple:
+    """(text for the AI, info) from the code index: a short map of the project and the files the
+    request most likely concerns. ("", {}) for small projects, which the AI can simply list."""
+    from taskmind.codeindex import MAP_MIN_FILES
+    if not repo.index_wanted(MAP_MIN_FILES):
+        return "", {}
+    from taskmind.codeindex import Index
+    if event and not Index.saved_exists(repo):
+        event("indexing", files=repo.code_file_count())  # the first run reads every file once
+    index = repo.index
+    guess = index.relevant(text, limit=8, exclude=set(focus))
+    parts = ["Project map, computed by TaskMind from the code (use it to go straight to the right files):\n"
+             + index.map_text(limit=limit, focus=focus)]
+    if guess:
+        parts.append("Files this request probably concerns, with the definitions in them whose names match "
+                     "(start with these; they may be wrong):\n" + "\n".join(
+                         f"  {path}" + (": " + ", ".join(f"{name} (line {line})" for name, line in names)
+                                       if names else "") for path, names in guess))
+    shown = []
+    room = excerpt_chars
+    if room >= 1200:  # roomy providers: show the code itself, not just where it is
+        pieces = []
+        for path, qualified, line, end in index.best_definitions(text, limit=4, exclude=set(focus)):
+            code = index.excerpt(path, line, end, max_lines=45 if room >= 4000 else 25)
+            if code and len(code) <= room:
+                pieces.append(f"--- {path}: {qualified} ---\n{code}")
+                shown.append(f"{path}:{qualified}")
+                room -= len(code)
+            if len(pieces) >= 3:
+                break
+        if pieces:
+            parts.append("The code of the best-matching definitions, so you can start from it (they may not "
+                         "be the right ones):\n\n" + "\n\n".join(pieces))
+    info = {**index.summary(), "relevant": [path for path, _ in guess], "shown": shown}
+    return "\n\n".join(parts), info
+
+
 INIT_GOAL = """Study this project so that an AI engineer can work on it well later, then write its \
 project notes: TASKMIND.md, read at the start of every TaskMind build.
 
@@ -124,6 +161,9 @@ def write_notes(llm, repo: Repo, known_check="", on_step=None) -> str:
     goal = INIT_GOAL
     if known_check:
         goal += f"\n\nTaskMind found this test command: {known_check}"
+    overview, _ = code_context(repo, "", limit=min(6000, getattr(llm, "context_budget", 9000) // 6))
+    if overview:
+        goal += "\n\n" + overview
 
     def parses(text):
         try:
