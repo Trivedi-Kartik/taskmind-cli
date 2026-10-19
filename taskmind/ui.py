@@ -1,6 +1,7 @@
 """Terminal output. Uses `rich` when installed, plain text otherwise."""
 
 import contextlib
+import os
 import re
 import sys
 
@@ -64,6 +65,46 @@ def markdown(text):
         _console.print(Markdown(text))
     else:
         print(text)
+
+
+def panel(title, lines):
+    """A titled box around a few lines (a plain heading and lines when rich isn't installed)."""
+    lines = [humanize(line) for line in lines]
+    if _console:
+        from rich.panel import Panel
+        _console.print(Panel("\n".join(lines), title=title, title_align="left", border_style="cyan", expand=False))
+    else:
+        print(f"== {title} ==")
+        for line in lines:
+            print(re.sub(r"\[/?[a-z ]+\]", "", line))
+
+
+def chat_prompt(label="tm"):
+    """The prompt of the chat session: bold cyan on a colour terminal. The \\001/\\002 marks tell readline
+    which characters take no room, so editing and history keep working."""
+    if _console and sys.stdout.isatty() and not os.environ.get("NO_COLOR"):
+        on, off = "\033[1;36m", "\033[0m"
+        if "readline" in sys.modules:
+            on, off = "\001" + on + "\002", "\001" + off + "\002"
+        return f"{on}{label} ❯{off} "
+    return f"{label} > "
+
+
+def diff(text):
+    """A patch, with additions in green and removals in red where there are colours."""
+    if not _console:
+        print(text)
+        return
+    for line in text.splitlines():
+        shown = escape(line)
+        if line.startswith("+") and not line.startswith("+++"):
+            _console.print(f"[green]{shown}[/green]")
+        elif line.startswith("-") and not line.startswith("---"):
+            _console.print(f"[red]{shown}[/red]")
+        elif line.startswith(("@@", "diff ", "index ")):
+            _console.print(f"[cyan]{shown}[/cyan]")
+        else:
+            _console.print(shown)
 
 
 def bullets(title, items):

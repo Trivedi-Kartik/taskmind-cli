@@ -4,7 +4,8 @@
 
 ```sh
 cd ~/code/my-app
-tm build "add a CSV export to the reports page"
+tm                                  # opens a session: type what you want, ask questions, follow up
+tm build "add a CSV export to the reports page"      # or one request at a time
 ```
 
 TaskMind reads your project, writes the code and its tests, runs them, fixes what fails,
@@ -28,8 +29,48 @@ backup AI by itself when one hits its limit.
 | **Any AI, free ones included** | Gemini, Groq, OpenRouter, Ollama (local), OpenAI, Claude |
 | **Your language** | Plain-word explanations in English, Hindi or Hinglish; speak instead of typing |
 
+## The session: just `tm`
+
+In a terminal, typing `tm` opens a session in the current project, like talking to a colleague:
+
+```
+╭─ TaskMind 0.8.0 ───────────────────────────────────────────╮
+│ 📁 coffice-cafe   🌿 master   🤖 Google Gemini / gemini-3.5 │
+│ 📘 TASKMIND.md  🗺 36 code files                            │
+│                                                             │
+│ Say what you want built or changed, or ask a question.      │
+│ /help for commands · Ctrl+C stops a build · Ctrl+D leaves   │
+╰─────────────────────────────────────────────────────────────╯
+tm ❯ where is the footer tagline set?
+  → search code tagline
+  index.html:576 sets it, inside <footer> ...
+tm ❯ make it bold
+↪ Following up on TM-2 (round 2): make it bold
+  ...
+✅ Done and checked.
+Kept on master. /undo takes it back, /diff shows what changed, or say what to change next.
+tm ❯ now a bit smaller too         ← remembers "it": no flags, no second command
+```
+
+- **Say what you want** and it's built, checked and kept. **Ask a question** and it's answered from your
+  code without changing anything. Questions are told apart from requests by how they're worded; `/ask ...`
+  and `/build ...` override the guess.
+- **Follow-ups just work.** The session remembers what it has built, so "make *that* bigger" knows what
+  *that* is. `/clear` forgets and starts fresh.
+- **Safe, and quick.** Every build still runs on its own branch with checks. A build that passes is kept
+  straight away (one message instead of two prompts), and `/undo` takes it back. One that fails is left on its
+  branch: say what to change to carry on from there, or `/undo`.
+- **Ctrl+C stops a build** and returns to the prompt; the work so far is saved.
+- **Commands:** `/undo`, `/diff` (what the last build changed), `/status`, `/new FOLDER request` (a new project;
+  the session moves into it), `/init`, `/index`, `/voice`, `/model`, `/clear`, `/help`, `/exit`. Tab completes
+  them, the up arrow brings back earlier lines, and a trailing `\` continues a line. Any TaskMind command works
+  too: `tm list`.
+- Outside a terminal (pipes, scripts), plain `tm` still prints the short overview. `tm chat` always opens the
+  session; `TASKMIND_NO_CHAT=1` makes plain `tm` print the overview.
+
 ## Contents
 
+- [The session: just `tm`](#the-session-just-tm)
 - [Install and update](#install-and-update)
 - [Set up your AI](#set-up-your-ai)
 - [Build it: tm build](#build-it-tm-build)
@@ -351,6 +392,7 @@ shows every option.
 
 | Command | What it does |
 |---|---|
+| `tm` / `tm chat` | The [session](#the-session-just-tm): say what you want, ask questions, follow up |
 | `tm build "..." \| <id>` | Build it ([details](#build-it-tm-build)); `@file` mentions; `--more`, `--new`, `--check`, `--undo`, `--simple`, `--voice`, `-y` |
 | `tm init` | Study this project and write `TASKMIND.md`, the notes every build reads first |
 | `tm index` | The code index of this project; `--find NAME`, `--outline FILE`, `--rebuild` ([details](#big-projects-the-code-index)) |
@@ -445,7 +487,7 @@ instead. `tm show <id>` lists which AI did what.
 ## Development
 
 ```sh
-python3 -m unittest discover -s tests     # 372 unit tests, no AI calls, no dependencies
+python3 -m unittest discover -s tests     # 393 unit tests, no AI calls, no dependencies
 python3 tests/live_smoke.py               # every command end to end, with your real AI provider
 python3 scripts/build.py                  # refresh the bundled guide, build dist/taskmind.pyz
 ```

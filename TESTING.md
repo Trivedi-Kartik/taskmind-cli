@@ -229,7 +229,7 @@ git add . && git commit -qm "Notes app" && echo ready
 
 | ID | Steps | Expect |
 |---|---|---|
-| P1 | `python3 scripts/build.py`, then `python3 dist/taskmind.pyz --version` and `python3 dist/taskmind.pyz help reminders` | taskmind 0.7.0, and the help works from the single file |
+| P1 | `python3 scripts/build.py`, then `python3 dist/taskmind.pyz --version` and `python3 dist/taskmind.pyz help reminders` | taskmind 0.8.0, and the help works from the single file |
 | P2 (optional) | If you have pipx: `pipx install /home/user/kartik/folder` then `tm --version` in a new terminal | The `tm` command works from anywhere |
 | P3 | In a new project folder (any `git init` folder with a file), `tm add "x"` then `tm go <id>` | First it asks "Allow this for this project?", naming your AI provider; answer **n**: "nothing was sent". Run again and answer y: it doesn't ask a third time |
 | P4 | `tm report-bug "testing the report"` | A saved report file; open it: version, system, provider name, recent errors, and **no API key** |
@@ -260,6 +260,21 @@ git add -A && git commit -qm "start"
 | Q11 | Edit a file without committing, then `tm build "anything"` | It lists your change and offers to save it for you; answer y and the build goes ahead |
 | Q12 | `cd ~/tm-tests && tm build --new page-test "a one-page site with a button that counts clicks"` | The output shows "open the page in a hidden browser" and "Checked by TaskMind: ... browser check" |
 | Q8 | Try it on a real project of yours, with a small real task | Honest question: did you keep the result? How long did it take? Was anything wrong? (This is the most useful feedback of all) |
+
+## V. The session (just `tm`)
+
+| ID | Steps | Expect |
+|---|---|---|
+| V1 | `cd ~/tm-tests/coffice-cafe && tm` | A box with the folder, branch, AI and project notes, then a `tm ❯` prompt |
+| V2 | Type `where is the footer tagline set?` | A few → lines while it reads, then an answer naming the file and line. `git status` is clean: nothing changed |
+| V3 | Type `make the footer tagline bold` | A build; ✅ Done and checked; "Kept. /undo takes it back" with no questions asked. Look at the page: is it bold? |
+| V4 | Type `now make it a bit smaller too` (no flags) | "Following up on TM-n (round 2)": it knew what "it" was |
+| V5 | `/diff`, then `/status` | The change in green and red; the list of builds in this session |
+| V6 | `/undo` and answer y | Back to how it was before the last build. Press the up arrow: your earlier lines are there. Type `/h` and press Tab |
+| V7 | Type a request, and press Ctrl+C while it works | "Cancelled", a hint to carry on or /undo, and the `tm ❯` prompt again (not an exit) |
+| V8 | Press Ctrl+D, or type `/exit` | "Bye!" (and a note if unfinished work is saved on a branch) |
+| V9 | `cd ~ && tm`, then type `/new my-shop a billing program for a small shop` | A new folder is made, built in, and the session says "Now working in ..." |
+| V10 | `echo | tm` or `tm | cat` (not a terminal) | The short overview, not a session |
 
 ## U. The code index (big projects)
 

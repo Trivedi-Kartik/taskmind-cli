@@ -98,7 +98,8 @@ def cmd_greet(args):
 
 def maybe_greet(args):
     """The first time someone uses TaskMind each day, a one-line greeting with their day."""
-    if args.command in ("remind", "export", "backup", "greet", "tutorial") or not sys.stdout.isatty():
+    if (args.command in ("remind", "export", "backup", "greet", "tutorial", "chat") or getattr(args, "chat", False)
+            or not sys.stdout.isatty()):
         return
     try:
         db = DB(config.db_path())

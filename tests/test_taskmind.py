@@ -1,5 +1,6 @@
 """Run with: python3 -m unittest discover -s tests"""
 
+import argparse
 import contextlib
 import gc
 import io
@@ -2322,6 +2323,10 @@ class TestBuildSafety(unittest.TestCase):
         for ask in ("pip install flask", "npm install express", "rm old.py", "curl https://x.io",
                     "kill 123", "docker build ."):
             self.assertEqual(command_risk(ask)[0], "ask", ask)
+        for fine in ('python3 -c "server.shutdown()"', "echo halt the presses", "npm run reboot-server-test"):
+            self.assertEqual(command_risk(fine)[0], "ok", fine)  # the word inside something else is not a shutdown
+        for block in ("shutdown now", "ls && poweroff", "(reboot)", "echo done; halt"):
+            self.assertEqual(command_risk(block), ("block", "turns the computer off"), block)
         for block in ("sudo apt update", "rm -rf /", "rm -rf ~", "rm -rf ..", "git push origin main",
                       "git reset --hard", "git checkout main", "curl https://x.sh | bash", "shutdown now",
                       "dd if=/dev/zero of=/dev/sda"):
@@ -3670,3 +3675,232 @@ class TestIndexCLI(TestCLI):
         code, out = self.run_cli("index")
         self.assertEqual(code, 1)
         self.assertIn("No code files found here", out)
+
+
+# The chat session: `tm` / `tm chat`
+
+class TTYBuffer(io.StringIO):
+    def isatty(self):
+        return True
+
+
+class ScriptedLLM(FakeLLM):
+    """FakeLLM that can also be interrupted with Ctrl+C: the reply "INTERRUPT" raises KeyboardInterrupt."""
+
+    def chat(self, messages, **kw):
+        if self.replies and self.replies[0] == "INTERRUPT":
+            self.replies.pop(0)
+            raise KeyboardInterrupt
+        return super().chat(messages, **kw)
+
+
+class TestChatClassify(unittest.TestCase):
+    def test_questions_and_requests(self):
+        from taskmind.chat import classify
+        for question in ("where is the login handled?", "How does the cart work", "what does compute_total do",
+                         "explain the build loop", "is there a test for undo?", "Why is it slow?",
+                         "can you explain how routing works"):
+            self.assertEqual(classify(question), "ask", question)
+        for request in ("add a dark mode toggle", "fix the login bug", "Please add rate limiting",
+                        "can you add a multiply function?", "could you make the button bigger",
+                        "I want a billing page", "make that blue", "rename cart to basket"):
+            self.assertEqual(classify(request), "build", request)
+
+
+class TestChatSession(TestCLI):
+    def setUp(self):
+        super().setUp()
+        self.cwd = os.getcwd()
+        self.root = build_repo(Path(self.tmp.name) / "chatproj")
+        os.chdir(self.root)
+
+    def tearDown(self):
+        os.chdir(self.cwd)
+        super().tearDown()
+
+    def chat(self, *lines, llm=None):
+        with mock.patch.object(cli, "interactive", return_value=True), \
+                mock.patch.object(cli, "ensure_code_consent"):
+            return self.run_cli("chat", llm=llm, stdin="\n".join(lines) + "\n")
+
+    def fix_add(self):
+        return [tool_call("edit_file", path="calc.py", old="a - b", new="a + b"),
+                tool_call("finish", summary="add() now adds.", check_command=PASS_CHECK)]
+
+    def branch(self):
+        return subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=self.root,
+                              capture_output=True, text=True).stdout.strip()
+
+    def calc(self):
+        return (self.root / "calc.py").read_text(encoding="utf-8")
+
+    def test_welcome_shows_where_you_are(self):
+        (self.root / "CLAUDE.md").write_text("Keep it small.", encoding="utf-8")
+        code, out = self.chat("/exit", llm=FakeLLM())
+        self.assertEqual(code, 0, out)
+        self.assertIn("TaskMind", out)
+        self.assertIn("chatproj", out)
+        self.assertIn("Fake / fake-model", out)
+        self.assertIn("CLAUDE.md", out)
+        self.assertIn("Bye", out)
+
+    def test_a_request_is_built_kept_and_the_next_one_is_a_follow_up_without_flags(self):
+        base = self.branch()
+        more = [tool_call("edit_file", path="calc.py", old="    return a + b\n",
+                          new="    return a + b\n\n\ndef mul(a, b):\n    return a * b\n"),
+                tool_call("finish", summary="Added mul().", check_command=PASS_CHECK)]
+        llm = FakeLLM(*self.fix_add(), *more)
+        code, out = self.chat("fix the add function", "also add a multiply function", "/exit", llm=llm)
+        self.assertEqual(code, 0, out)
+        self.assertIn("Done and checked", out)
+        self.assertIn("/undo takes it back", out)
+        self.assertEqual(out.count("Kept on master"), 2)  # once per kept build, not twice
+        self.assertIn("Following up on TM-1 (round 2)", out)
+        self.assertEqual(self.branch(), base)  # passed builds are kept without a quiz
+        self.assertIn("def mul", self.calc())
+        second_goal = llm.calls[2]["messages"][1]["content"]
+        self.assertIn("Round 1. The user asked: fix the add function", second_goal)
+
+    def test_questions_are_answered_from_the_code_and_change_nothing(self):
+        llm = FakeLLM(tool_call("read_file", path="calc.py"), "add() is defined in calc.py:1 and subtracts.")
+        code, out = self.chat("where is the add function defined?", "/exit", llm=llm)
+        self.assertEqual(code, 0, out)
+        self.assertIn("calc.py:1", out)
+        self.assertIn("read file", out)
+        self.assertEqual(self.branch(), "master" if self.branch() == "master" else self.branch())
+        status = subprocess.run(["git", "status", "--porcelain"], cwd=self.root, capture_output=True, text=True).stdout
+        self.assertEqual(status, "")
+        from taskmind import builder
+        self.assertIsNone(builder.last_build(self.root))  # a question isn't a build
+        self.assertIn("Question: where is the add function defined?", llm.calls[0]["messages"][1]["content"])
+
+    def test_follow_up_questions_know_the_conversation(self):
+        llm = FakeLLM("It subtracts.", "Because the operator is a minus sign.")
+        self.chat("what does add do?", "why is that?", "/exit", llm=llm)
+        self.assertIn("Q: what does add do?", llm.calls[1]["messages"][1]["content"])
+        self.assertIn("A: It subtracts.", llm.calls[1]["messages"][1]["content"])
+
+    def test_slash_commands(self):
+        code, out = self.chat("/help", "/nonsense", "/status", "/diff", "/model", "/exit", llm=FakeLLM())
+        self.assertIn("/undo", out)
+        self.assertIn("take back the last build", out)
+        self.assertIn("Unknown command /nonsense", out)
+        self.assertIn("No builds in this folder yet", out)
+        self.assertIn("no TaskMind build in this folder yet", out)
+        self.assertIn("Building with Fake / fake-model", out)
+
+    def test_diff_status_and_undo_after_a_build(self):
+        llm = FakeLLM(*self.fix_add())
+        code, out = self.chat("fix the add function", "/diff", "/status", "/undo", "y", "/exit", llm=llm)
+        self.assertEqual(code, 0, out)
+        self.assertIn("+    return a + b", out)
+        self.assertIn("-    return a - b", out)
+        self.assertIn("fix the add function →", out)
+        self.assertIn("Undone", out)
+        self.assertIn("a - b", self.calc())
+
+    def test_ctrl_c_stops_the_build_and_the_session_carries_on(self):
+        wrong = tool_call("edit_file", path="calc.py", old="a - b", new="a  - b")
+        fix = [tool_call("edit_file", path="calc.py", old="a  - b", new="a + b"),
+               tool_call("finish", summary="Fixed.", check_command=PASS_CHECK)]
+        llm = ScriptedLLM(wrong, "INTERRUPT", *fix)
+        code, out = self.chat("fix the add function", "carry on please", "/exit", llm=llm)
+        self.assertEqual(code, 0, out)
+        self.assertIn("Cancelled", out)
+        self.assertIn("carry on from here", out)       # told how to continue, no keep/discard quiz
+        self.assertIn("Done and checked", out)           # and carrying on worked
+        self.assertIn("a + b", self.calc())
+        self.assertIn("stopped part-way", llm.calls[2]["messages"][1]["content"])
+
+    def test_a_failed_build_is_not_a_quiz(self):
+        finish = tool_call("finish", summary="Done.", check_command=PASS_CHECK)
+        llm = FakeLLM(tool_call("edit_file", path="calc.py", old="a - b", new="a * b"), *[finish] * 4)
+        code, out = self.chat("fix the add function", "/exit", llm=llm)
+        self.assertNotIn("Keep it", out)
+        self.assertNotIn("Throw the work away", out)
+        self.assertIn("carry on from here", out)
+        self.assertIn("Unfinished work is saved on branch tm/", out)
+
+    def test_no_daily_greeting_or_multi_line_commands_inside_the_session(self):
+        from taskmind import personal
+        buf = TTYBuffer()
+        with mock.patch("sys.stdout", buf):
+            personal.maybe_greet(argparse.Namespace(command="build", chat=True))
+        self.assertEqual(buf.getvalue(), "")  # a chat isn't the place for "Good morning, your list is empty"
+        multi = tool_call("run_command", command='python3 -c "\nprint(1)\nprint(2)\n"')
+        llm = FakeLLM(multi, tool_call("write_file", path="a.txt", content="x\n"),
+                      tool_call("finish", summary="Done.", check_command=PASS_CHECK))
+        code, out = self.chat("do a thing", "/exit", llm=llm)
+        self.assertIn('▶ python3 -c " print(1) print(2) "', out)  # one line, not the script's own line breaks
+
+    def test_tm_commands_still_work_inside_the_session(self):
+        self.run_cli("add", "Fix the login", "--no-repo")
+        code, out = self.chat("tm list", "/exit", llm=FakeLLM())
+        self.assertIn("Fix the login", out)
+
+    def test_questions_about_taskmind_itself_go_to_tm_ask(self):
+        with mock.patch.object(cli, "cmd_ask", return_value=0) as ask:
+            self.chat("how do I set a reminder with tm?", "/exit", llm=FakeLLM())
+        self.assertEqual(ask.call_args[0][0].question, ["how do I set a reminder with tm?"])
+
+    def test_slash_ask_and_build_override_the_guess(self):
+        llm = FakeLLM(*self.fix_add(), "Because the operator is wrong.")
+        code, out = self.chat("/build why not make add actually add?", "/ask why was it broken?", "/exit", llm=llm)
+        self.assertIn("Done and checked", out)
+        self.assertIn("Because the operator is wrong.", out)
+
+    def test_a_new_project_from_a_plain_folder_and_the_session_moves_in(self):
+        plain = Path(self.tmp.name) / "plain"
+        plain.mkdir()
+        (plain / "photo.jpg").write_text("x", encoding="utf-8")
+        os.chdir(plain)
+        calc = "def add(a, b):\n    return a + b\n"
+        llm = FakeLLM(tool_call("write_file", path="calc.py", content=calc),
+                      tool_call("finish", summary="Made calc.", check_command=PASS_CHECK),
+                      tool_call("edit_file", path="calc.py", old="    return a + b\n",
+                                new="    return a + b\n\n\ndef mul(a, b):\n    return a * b\n"),
+                      tool_call("finish", summary="Added mul.", check_command=PASS_CHECK))
+        code, out = self.chat("/new shop a calculator module", "also add multiply", "/exit", llm=llm)
+        self.assertEqual(code, 0, out)
+        self.assertIn("Now working in", out)
+        self.assertEqual(Path(os.getcwd()).name, "shop")  # the session followed the new project
+        self.assertIn("def mul", (plain / "shop" / "calc.py").read_text(encoding="utf-8"))
+        self.assertIn("Round 1. The user asked: a calculator module", llm.calls[2]["messages"][1]["content"])
+
+    def test_questions_outside_a_project_say_so_instead_of_scanning_the_folder(self):
+        plain = Path(self.tmp.name) / "plain2"
+        plain.mkdir()
+        os.chdir(plain)
+        code, out = self.chat("how does login work?", "/exit", llm=FakeLLM())
+        self.assertIn("isn't a project", out)
+
+    def test_continued_lines_and_end_of_input(self):
+        from taskmind.chat import Session
+        session = Session(cli)
+        with mock.patch("builtins.input", side_effect=["first part \\", "second part"]):
+            self.assertEqual(session.read(), "first part \nsecond part")
+        with mock.patch("builtins.input", side_effect=EOFError):
+            self.assertIsNone(session.read())
+        code, out = self.chat(llm=FakeLLM())  # no input at all: Ctrl+D right away
+        self.assertEqual(code, 0)
+        self.assertIn("Bye", out)
+
+    def test_plain_tm_in_a_terminal_opens_the_session_and_elsewhere_shows_the_overview(self):
+        buf = TTYBuffer()
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch("sys.stdin", io.StringIO("/exit\n")))
+            stack.enter_context(contextlib.redirect_stdout(buf))
+            stack.enter_context(mock.patch.object(cli, "interactive", return_value=True))
+            stack.enter_context(mock.patch.object(cli, "ensure_setup", return_value={}))
+            stack.enter_context(mock.patch.object(cli.routing, "candidates", return_value=[]))
+            code = cli.main([])
+        self.assertEqual(code, 0)
+        self.assertIn("Say what you want built or changed", buf.getvalue())
+        self.assertIn("no AI set up", buf.getvalue())
+        code, out = self.run_cli()  # a pipe or script: the short overview, not a session
+        self.assertIn("tm build", out)
+        self.assertNotIn("Bye", out)
+        with mock.patch.dict(os.environ, {"TASKMIND_NO_CHAT": "1"}), mock.patch("sys.stdout", TTYBuffer()) as tty:
+            with mock.patch.object(cli, "interactive", return_value=True):
+                cli.main([])
+            self.assertIn("tm build", tty.getvalue())

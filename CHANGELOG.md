@@ -2,6 +2,18 @@
 
 Update with `tm update`. Your tasks, settings and keys are kept.
 
+## 0.8.0 (2026-10-19)
+
+- **A session, like Claude Code, Codex and Gemini.** Just type `tm` in a terminal: a prompt where you say
+  what you want built, ask questions about the code, and follow up without repeating yourself ("make
+  that bigger"). Passed builds are kept straight away; `/undo` takes them back, `/diff` shows what changed.
+  Ctrl+C stops a build and returns to the prompt. `/help` lists everything; any `tm` command still works inside.
+- Questions about the code are answered from the code (with the index and your project notes) and change nothing.
+- `/new FOLDER request` starts a new project and the session moves into it.
+- Fixed: a command was refused as "turns the computer off" only because a script contained the word
+  `shutdown` (`server.shutdown()`); now only a command that actually is one is blocked. Multi-line check
+  commands print on one line, and the daily greeting no longer interrupts a session.
+
 ## 0.7.0 (2026-10-19)
 
 - **The code index for big projects.** TaskMind keeps a map of your code (definitions with line

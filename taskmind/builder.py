@@ -38,7 +38,8 @@ BLOCKED = [
     (r"\bsudo\b|\bsu\s|\bdoas\b", "needs admin rights"),
     (r"\brm\s+(-\w+\s+)*(/|~|\$HOME|\.\.)(\s|/?$|/\*)", "deletes outside the project"),
     (r"\b(mkfs|fdisk|diskutil)\b|\bformat\s+[a-zA-Z]:|\bdd\s+if=|>\s*/dev/sd", "can erase a disk"),
-    (r"\b(shutdown|reboot|halt|poweroff)\b", "turns the computer off"),
+    # Only when it is the command being run: `server.shutdown()` inside a script is not a shutdown.
+    (r"(?:^|[;&|\n(]\s*)(?:shutdown|reboot|halt|poweroff)\b", "turns the computer off"),
     (r":\(\)\s*\{", "a fork bomb"),
     (r"(curl|wget)[^|]*\|\s*(sudo\s+)?(ba|z)?sh\b", "runs a script straight from the internet"),
     (r"\bgit\s+(push|reset|checkout|switch|commit|rebase|merge|branch|stash|clean|remote|config)\b",
@@ -730,6 +731,19 @@ def history_text(state, limit=4000) -> str:
         lines.append(line)
     text = "\n".join(lines)
     return text if len(text) <= limit else "... (older rounds left out)\n" + text[-limit:]
+
+
+def last_diff(root) -> tuple:
+    """(summary, patch) of what the last build changed: its branch against yours when it's unfinished,
+    or the change it merged into your branch."""
+    state = last_build(root)
+    if not state:
+        raise GitError("There's no TaskMind build in this folder yet.")
+    if state.get("kept") and state.get("merged"):
+        old, new = state["start"], state["merged"]
+    else:
+        old, new = state["base"], state["branch"]
+    return git(root, "diff", "--stat", old, new), git(root, "diff", old, new)
 
 
 def current_branch(root) -> str:

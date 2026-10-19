@@ -38,8 +38,8 @@ What's measured from now on is **whether real tasks get done**, graded by checks
 - [x] **3. Follow-ups:** `tm build --more "make it bigger"` continues the last build with the
       history of every round; with no text it resumes a build stopped by failing checks, Ctrl+C
       or limits, on the same branch
-- [ ] **3b. `tm chat`:** a back-and-forth session in a project, where every change is still
-      tested and undoable (follow-ups without retyping `tm build --more`)
+- [x] **3b. The session:** plain `tm` opens a chat in the project: requests build, questions are
+      answered from the code, follow-ups remember, `/undo` and `/diff`, Ctrl+C returns to the prompt
 - [x] **4. Big projects:** a saved index of the codebase (definitions with lines, what imports
       what), refreshed on change; builds start with the project map, the likely files and the code
       of the best-matching functions. One task: 25 steps instead of 44. Still to do: more

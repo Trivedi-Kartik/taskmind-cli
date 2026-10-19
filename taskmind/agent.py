@@ -60,7 +60,7 @@ def _findings(messages, budget) -> str:
 
 
 def run_tool_agent(llm, system, user, repo: Repo, explore_hint="", max_steps=10, budget=None,
-                   on_step=None, accept=None) -> str:
+                   on_step=None, accept=None, final_json=True) -> str:
     """Let the model explore the repo with tools, then return its final text answer.
 
     Free tiers like Groq's cap tokens per minute (8k), and they count the *reserved*
@@ -130,7 +130,7 @@ def run_tool_agent(llm, system, user, repo: Repo, explore_hint="", max_steps=10,
                 "give your final answer now."
             )},
         ],
-        json_mode=True,
+        json_mode=final_json,  # False for free-text answers (questions about the code)
         max_tokens=3000,
     )
     return final.get("content") or ""

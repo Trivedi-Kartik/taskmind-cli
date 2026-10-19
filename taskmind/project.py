@@ -177,3 +177,31 @@ def write_notes(llm, repo: Repo, known_check="", on_step=None) -> str:
     if not notes:
         raise ValueError("The AI didn't write any notes. Try again.")
     return redact(notes) + "\n"
+
+
+ASK_SYSTEM = """You are TaskMind, a senior engineer answering a question about the user's project. \
+Read the code with your tools before answering; don't guess. Answer directly and in plain words, name the files \
+and lines you relied on (path:line), and say so when the code doesn't tell you. You only look: never suggest that \
+you have changed anything."""
+
+
+def answer_code_question(llm, repo: Repo, question, memory=(), on_step=None) -> str:
+    """Answer a question about the project from its code (read-only), with the same head start a build gets:
+    project notes, files named with @, and the index's map and best-matching code."""
+    from taskmind.agent import run_tool_agent
+    budget = getattr(llm, "context_budget", 9000)
+    parts = []
+    for name, text in project_notes(repo.root, limit=min(6000, budget // 6)):
+        parts.append(f"--- {name} (the project's own notes) ---\n{text}")
+    attached, _ = attachments(repo, question, limit=budget // 4)
+    if attached:
+        parts.append("Files and folders the user pointed at:\n\n" + attached)
+    overview, _ = code_context(repo, question, limit=min(6000, budget // 8), excerpt_chars=min(6000, budget // 12))
+    if overview:
+        parts.append(overview)
+    if memory:
+        parts.append("The conversation so far:\n" + "\n".join(f"Q: {q}\nA: {a[:500]}" for q, a in list(memory)[-3:]))
+    goal = "\n\n".join(parts + [f"Question: {question}"])
+    hint = "Use your tools to read the relevant code first. Be economical: you have a limited number of calls."
+    return run_tool_agent(llm, ASK_SYSTEM, goal, repo, hint, max_steps=14, on_step=on_step,
+                          final_json=False).strip()

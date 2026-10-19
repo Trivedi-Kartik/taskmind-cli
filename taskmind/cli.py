@@ -1127,6 +1127,12 @@ def _new_project(name):
     return str(folder)
 
 
+def cmd_chat(args):
+    """A session in this project: say what you want, ask questions, follow up."""
+    from taskmind import chat
+    return chat.run(sys.modules[__name__])
+
+
 def cmd_index(args):
     """Show, check or rebuild the code index of this project."""
     from taskmind.codeindex import Index, cache_path
@@ -1319,7 +1325,7 @@ def _show_build_event(kind, name=None, args=None, result=None, command=None, cod
                 ui.out(f"  📄 Handed to the AI up front: {ui.escape(', '.join(index['shown']))}")
     elif kind == "tool":
         if name == "run_command":
-            ui.out(f"  ▶ [cyan]{ui.escape(str(args.get('command', ''))[:120])}[/cyan]")
+            ui.out(f"  ▶ [cyan]{ui.escape(' '.join(str(args.get('command', '')).split())[:120])}[/cyan]")
         elif name in ("write_file", "edit_file"):
             ui.out(f"  ✏️  {ui.escape(str(args.get('path') or args.get('file') or ''))}")
         else:
@@ -1334,7 +1340,7 @@ def _show_build_event(kind, name=None, args=None, result=None, command=None, cod
         elif result.startswith("Tool error"):
             ui.out(f"    [yellow]{ui.escape(result[:160])}[/yellow]")
     elif kind == "check":
-        ui.out(f"\n[bold]Checking it myself:[/bold] {ui.escape(command)}")
+        ui.out(f"\n[bold]Checking it myself:[/bold] {ui.escape(' '.join(command.split())[:200])}")
     elif kind == "checked":
         if code == 0:
             ui.out("[green]✅ Passed.[/green]")
@@ -1344,6 +1350,8 @@ def _show_build_event(kind, name=None, args=None, result=None, command=None, cod
                 for line in output.splitlines()[1:6]:
                     ui.out(f"   [dim]{ui.escape(line[:160])}[/dim]")
 
+
+LAST_BUILD_ROOT = None  # the folder the last build worked in (a chat session follows a new project into it)
 
 BUILD_RESULT = {
     "passed": "[bold green]✅ Done and checked.[/bold green]",
@@ -1406,6 +1414,8 @@ def cmd_build(args):
     ensure_code_consent(ws.repo, "build", cands)
     if task is None:
         task = get_task(db, db.add_task(title, text if text != title else "", repo=str(ws.root)))
+    global LAST_BUILD_ROOT
+    LAST_BUILD_ROOT = str(ws.root)
     builder.remember(ws.root, task_id=task["id"])
     db.update_task(task["id"], status=_advance(task, "in_progress"))
     db.log(task["id"], "build", ("Follow-up" if earlier else "Build") + f" started on branch {branch}")
@@ -1419,6 +1429,10 @@ def cmd_build(args):
            f"{ui.escape(base)} branch isn't touched until you keep the result.[/dim]\n")
 
     def leave_note():
+        if args.chat:
+            ui.out(f"[dim]The work so far is saved on branch {ui.escape(branch)}. Say what to change to carry "
+                   "on from here, or /undo to throw it away.[/dim]")
+            return
         ui.out(f"[dim]The work so far is on branch {ui.escape(branch)}. Continue it: tm build --more   "
                f"Throw it away: tm build --undo[/dim]")
 
@@ -1440,7 +1454,7 @@ def cmd_build(args):
     if report.get("reason"):
         ui.out(ui.escape(report["reason"]))
     if report["check"]:
-        ui.out(f"[dim]Checked by TaskMind: {ui.escape(report['check'][:200])}[/dim]")
+        ui.out(f"[dim]Checked by TaskMind: {ui.escape(' '.join(report['check'].split())[:200])}[/dim]")
     if report.get("note"):
         ui.out(f"[yellow]{ui.escape(report['note'])}[/yellow]")
     if report["summary"]:
@@ -1461,7 +1475,10 @@ def cmd_build(args):
         return 1
 
     passed = report["status"] == "passed"
-    if args.yes and passed or interactive() and ui.confirm(
+    if args.chat and not passed:  # in a session there's no keep/discard quiz: just carry on, or /undo
+        leave_note()
+        return 1
+    if (passed and (args.yes or args.auto_keep)) or interactive() and ui.confirm(
             f"Keep it (add it to your {base} branch)?", default=passed):
         builder.keep(ws.root, base, branch)
         if passed:
@@ -1469,8 +1486,11 @@ def cmd_build(args):
                 db.mark_subtask(task["id"], step["position"], True, ref=f"tm build ({branch})")
             db.update_task(task["id"], status="done")
         ui.out(f"[green]Kept on {ui.escape(base)}.[/green] " + ("" if passed else
-               f"[dim]TM-{task['id']} stays open until it's proven.[/dim]"))
-        ui.out('[dim]Want changes? tm build --more "what to change"[/dim]')
+               f"[dim]TM-{task['id']} stays open until it's proven.[/dim]") +
+               ("[dim]/undo takes it back, /diff shows what changed, or say what to change next.[/dim]"
+                if args.chat else ""))
+        if not args.chat:
+            ui.out('[dim]Want changes? tm build --more "what to change"[/dim]')
         return 0 if passed else 1
     if interactive() and ui.confirm("Throw the work away?", default=False):
         builder.discard(ws.root, base, branch)
@@ -1844,6 +1864,8 @@ def build_parser():
     sp.add_argument("--tool", choices=list(TOOLS), default="claude")
     sp.add_argument("-y", "--yes", action="store_true")
 
+    sp = add("chat", cmd_chat, "A session in this project: say what you want built, ask questions about the code, "
+                               "follow up. Plain `tm` opens it too")
     sp = add("index", cmd_index, "Show the code index TaskMind keeps of this project (definitions and who "
                                  "imports what); --find, --outline, --rebuild")
     sp.add_argument("--find", metavar="NAME", help="Where a function, class or constant is defined")
@@ -1867,6 +1889,8 @@ def build_parser():
     sp.add_argument("--undo", action="store_true", help="Take back the last build in this folder "
                                                          "(kept or not); nothing else is touched")
     sp.add_argument("--max-steps", type=int, default=None, help=argparse.SUPPRESS)
+    sp.add_argument("--auto-keep", action="store_true", help=argparse.SUPPRESS)  # chat: keep it when checks pass
+    sp.add_argument("--chat", action="store_true", help=argparse.SUPPRESS)       # chat: session-style hints
     sp = add("step", cmd_step, "Add, edit, remove or list a task's steps yourself")
     sp.add_argument("action", choices=["add", "edit", "rm", "list", "show"])
     sp.add_argument("ref", help="Task (for add/list), or step like 3.2 (for edit/rm/show); `tm step 3.2` shows it")
@@ -1977,8 +2001,10 @@ def _main(argv=None) -> int:
         ui.error(friendly_usage_error(err, commands, argv))
         return 2
     if not getattr(args, "func", None):
-        ui.out(tutorial.OVERVIEW)  # plain `tm`: the short overview, not the full reference
-        return 0
+        if not (interactive() and sys.stdout.isatty()) or os.environ.get("TASKMIND_NO_CHAT"):
+            ui.out(tutorial.OVERVIEW)  # scripts and pipes: the short overview, not a session
+            return 0
+        args.command, args.func = "chat", cmd_chat  # plain `tm` in a terminal opens the session
     try:
         ui.SIMPLE = config.load().get("mode") == "simple"
     except (ValueError, OSError):
