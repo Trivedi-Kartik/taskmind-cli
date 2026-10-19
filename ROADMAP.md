@@ -35,9 +35,11 @@ What's measured from now on is **whether real tasks get done**, graded by checks
 - [x] **1. Project notes:** builds read TASKMIND.md, CLAUDE.md, AGENTS.md, .cursorrules,
       Copilot instructions; `tm init` writes TASKMIND.md
 - [x] **2. @mentions:** `tm build "... @src/app.ts ..."` starts from those files; typos caught
-- [ ] **3. Follow-ups:** `tm build --more "make it bigger"` continues the last build (same
-      branch, remembers what it did); later `tm chat`, a back-and-forth session where every
-      change is still tested and undoable. Also resume a build interrupted by Ctrl+C or limits
+- [x] **3. Follow-ups:** `tm build --more "make it bigger"` continues the last build with the
+      history of every round; with no text it resumes a build stopped by failing checks, Ctrl+C
+      or limits, on the same branch
+- [ ] **3b. `tm chat`:** a back-and-forth session in a project, where every change is still
+      tested and undoable (follow-ups without retyping `tm build --more`)
 - [ ] **4. Big projects:** a saved index of the codebase (files, symbols, what imports what),
       refreshed on change, so the AI finds things in one step instead of ten
 

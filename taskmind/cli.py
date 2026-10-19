@@ -1188,6 +1188,25 @@ def _undo_build(args):
     return 0
 
 
+CONTINUE_REQUEST = ("Continue the earlier work: finish whatever isn't done yet, and make the checks pass. "
+                    "If it's all done, check it and say so.")
+
+
+def _keep_users_edits_on_branch(root):
+    """Edits the person made by hand on an unfinished build's branch are part of that work: save
+    them with it (after asking), so the follow-up sees them and nothing is lost."""
+    from taskmind import builder
+    changes = builder.changed_files(root)
+    if not changes:
+        return
+    ui.out("You changed these files on the build's branch:\n" + ui.escape("\n".join(f"  {c}" for c in changes[:8])))
+    if interactive() and ui.confirm("Keep your changes as part of this build?", default=True):
+        builder.save_users_changes(root)
+        return
+    raise CLIError("Stopped, so your changes aren't lost. Commit them yourself, or run tm build --more again "
+                   "and answer y.")
+
+
 def _make_room_for_build(root):
     """Unsaved changes would mix with the build's work. Sort them out with the user, in plain words."""
     from taskmind import builder
@@ -1198,7 +1217,7 @@ def _make_room_for_build(root):
             builder.discard(root, leftover["base"], leftover["branch"])
             ui.out("[dim]Thrown away.[/dim]")
         else:
-            raise CLIError("Stopped. To throw the earlier build away: tm build --undo")
+            raise CLIError("Stopped. To continue that build: tm build --more   To throw it away: tm build --undo")
     changes = builder.changed_files(root)
     if not changes:
         return
@@ -1285,11 +1304,26 @@ def cmd_build(args):
         return _undo_build(args)
     cfg = ensure_setup()
     db = open_db()
+    earlier = None  # the last build's record, when this is a follow-up (--more)
+    if args.more:
+        here = os.getcwd()
+        earlier = builder.last_build(here) if builder.is_project(here) else None
+        if args.new:
+            raise CLIError("--more continues the last build in this folder; a new project doesn't need it.")
+        if not earlier:
+            raise CLIError('There\'s no earlier build in this folder to follow up. Start one with: tm build "..."')
+        if not args.task:
+            args.task = [CONTINUE_REQUEST]
     text, title, root, task = _build_goal(db, args)
+    if earlier and earlier.get("task_id"):
+        task = db.get_task(earlier["task_id"]) or task
+    resuming = bool(earlier) and builder.leftover_build(root) is not None
     if not args.new and not builder.is_project(root) and any(Path(root).iterdir()):
         args.new = _offer_new_folder(root, text, args.yes)
     if args.new:
         root = _new_project(args.new)
+    elif resuming:
+        _keep_users_edits_on_branch(root)
     elif builder.is_project(root):
         _make_room_for_build(root)
     from taskmind import project
@@ -1301,7 +1335,11 @@ def cmd_build(args):
         elif not ui.confirm(f"{ui.escape(names)} isn't in this project (a typo?). Build anyway?", default=False):
             return 1
     try:
-        base, branch = builder.start_branch(root, title, new_project=bool(args.new))
+        if resuming:  # an unfinished build: carry on where it is
+            base, branch = earlier["base"], earlier["branch"]
+        else:
+            base, branch = builder.start_branch(root, title, new_project=bool(args.new),
+                                                rounds=builder.rounds_of(earlier) if earlier else None)
     except builder.GitError as exc:
         raise CLIError(str(exc)) from exc
     ws = builder.Workspace(root, approve=lambda command, reason: args.yes or (
@@ -1311,26 +1349,35 @@ def cmd_build(args):
     ensure_code_consent(ws.repo, "build", cands)
     if task is None:
         task = get_task(db, db.add_task(title, text if text != title else "", repo=str(ws.root)))
+    builder.remember(ws.root, task_id=task["id"])
     db.update_task(task["id"], status=_advance(task, "in_progress"))
-    db.log(task["id"], "build", f"Build started on branch {branch}")
-    ui.out(f"🔨 Building [bold]TM-{task['id']}[/bold] in {ui.escape(str(ws.root))}")
-    ui.out(f"[dim]On a new branch, {ui.escape(branch)}: your {ui.escape(base)} branch isn't touched "
-           "until you keep the result.[/dim]\n")
+    db.log(task["id"], "build", ("Follow-up" if earlier else "Build") + f" started on branch {branch}")
+    rounds = len((builder.last_build(ws.root) or {}).get("rounds") or [])
+    if earlier:
+        ui.out(f"↪ Following up on [bold]TM-{task['id']}[/bold] (round {rounds + 1}): "
+               f"{ui.escape(text.splitlines()[0][:100])}")
+    else:
+        ui.out(f"🔨 Building [bold]TM-{task['id']}[/bold] in {ui.escape(str(ws.root))}")
+    ui.out(f"[dim]{'Continuing on' if resuming else 'On a new branch,'} {ui.escape(branch)}: your "
+           f"{ui.escape(base)} branch isn't touched until you keep the result.[/dim]\n")
 
     def leave_note():
-        ui.out(f"[dim]The work so far is on branch {ui.escape(branch)}. To throw it away and go back to how "
-               f"things were: tm build --undo[/dim]")
+        ui.out(f"[dim]The work so far is on branch {ui.escape(branch)}. Continue it: tm build --more   "
+               f"Throw it away: tm build --undo[/dim]")
 
     profile = insights.profile(cfg)
     try:
         report = AI("build", task, cands).run(lambda llm: builder.build(
             llm, text, ws, check=args.check or "", max_steps=args.max_steps, language=profile["language"],
-            simple=simple_mode() or args.simple, on_event=_show_build_event))
-    except (LLMError, KeyboardInterrupt):
-        builder.save_work(ws.root, f"TaskMind (unfinished): {title}")
+            simple=simple_mode() or args.simple, on_event=_show_build_event,
+            earlier=builder.history_text(earlier) if earlier else ""))
+    except (LLMError, KeyboardInterrupt) as exc:
+        files = builder.save_work(ws.root, f"TaskMind (unfinished): {title}")
+        builder.add_round(ws.root, text, "stopped", "", files, str(exc)[:600])
         leave_note()
         raise
     files = builder.save_work(ws.root, f"{title}\n\n{report['summary']}\n\nTM-{task['id']}".strip())
+    builder.add_round(ws.root, text, report["status"], report["summary"], files, report["check_output"])
 
     ui.out("\n" + BUILD_RESULT[report["status"]])
     if report.get("reason"):
@@ -1366,6 +1413,7 @@ def cmd_build(args):
             db.update_task(task["id"], status="done")
         ui.out(f"[green]Kept on {ui.escape(base)}.[/green] " + ("" if passed else
                f"[dim]TM-{task['id']} stays open until it's proven.[/dim]"))
+        ui.out('[dim]Want changes? tm build --more "what to change"[/dim]')
         return 0 if passed else 1
     if interactive() and ui.confirm("Throw the work away?", default=False):
         builder.discard(ws.root, base, branch)
@@ -1752,6 +1800,8 @@ def build_parser():
     sp.add_argument("--simple", action="store_true", help="Explain the result without technical words")
     sp.add_argument("-y", "--yes", action="store_true", help="Allow installs and deletions without asking, "
                                                              "and keep the result if the tests pass")
+    sp.add_argument("--more", action="store_true", help='Follow up on the last build here: '
+                    'tm build --more "make the button bigger" (no text: continue where it stopped)')
     sp.add_argument("--undo", action="store_true", help="Take back the last build in this folder "
                                                          "(kept or not); nothing else is touched")
     sp.add_argument("--max-steps", type=int, default=40, help=argparse.SUPPRESS)

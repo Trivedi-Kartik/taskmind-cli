@@ -2,6 +2,13 @@
 
 Update with `tm update`. Your tasks, settings and keys are kept.
 
+## 0.6.0 (2026-10-19)
+
+- **Follow-ups:** `tm build --more "make the button bigger"` continues from the last build and
+  remembers every earlier round, so "make *that* bigger" works.
+- **Pick up where it stopped:** `tm build --more` with no text continues a build that failed its
+  checks, was interrupted, or hit an AI limit, on the same branch.
+
 ## 0.5.0 (2026-10-19)
 
 - **Project notes:** every build first reads `TASKMIND.md`, `CLAUDE.md`, `AGENTS.md`,

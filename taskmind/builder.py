@@ -410,7 +410,7 @@ def _chat(llm, messages, budget, max_tokens):
 
 
 def build(llm, task, ws: Workspace, check="", max_steps=40, fix_rounds=3, language="auto", simple=False,
-          on_event=None, budget=None, browser=None) -> dict:
+          on_event=None, budget=None, browser=None, earlier="") -> dict:
     """Do the task in the workspace. Returns a report:
 
     status: "passed" (the check ran and passed), "failed" (the check kept failing),
@@ -426,7 +426,9 @@ def build(llm, task, ws: Workspace, check="", max_steps=40, fix_rounds=3, langua
     elif budget >= 30_000:
         ws.max_chars, ws.max_lines = 8000, 300
     known_check = check or detect_check(ws.root)
-    goal = (f"Task: {task}\n\nYou are already inside the project's folder ({ws.root.name}); every path is "
+    goal = (f"This continues earlier work in this project. What happened so far (it's in the code now; "
+            f"read the files before changing them):\n{earlier}\n\nThe user now asks for more.\n\n" if earlier else "")
+    goal += (f"Task: {task}\n\nYou are already inside the project's folder ({ws.root.name}); every path is "
             f"relative to it. Put files here (e.g. index.html), not in a new {ws.root.name}/ subfolder.\n\n"
             f"{_audience(language, simple)}")
     if known_check:
@@ -606,7 +608,7 @@ def project_name(task) -> str:
     return slug(" ".join(words[:3]), 30) if words else "my-project"
 
 
-def start_branch(root, task, new_project=False) -> tuple:
+def start_branch(root, task, new_project=False, rounds=None) -> tuple:
     """Put the work on a fresh branch. Returns (the user's branch, the new branch).
 
     Git starts only in a new project or an empty folder: never in a folder that already
@@ -627,7 +629,9 @@ def start_branch(root, task, new_project=False) -> tuple:
         name, n = f"tm/{slug(task)}-{n}", n + 1
     start = git(root, "rev-parse", "HEAD")
     git(root, "checkout", "-q", "-b", name)
-    _save_state(root, {"base": base, "branch": name, "start": start, "kept": False, "task": task})
+    # A follow-up to a kept build starts a new branch but carries the earlier rounds along.
+    _save_state(root, {"base": base, "branch": name, "start": start, "kept": False, "task": task,
+                       "rounds": list(rounds or [])})
     return base, name
 
 
@@ -649,6 +653,52 @@ def last_build(root):
         return json.loads(_state_file(root).read_text(encoding="utf-8"))
     except (OSError, ValueError, GitError):
         return None
+
+
+def remember(root, **fields):
+    """Add fields to the last build's record (e.g. which task it belongs to)."""
+    state = last_build(root)
+    if state is not None:
+        _save_state(root, {**state, **fields})
+
+
+def add_round(root, request, status, summary, changed, check_output=""):
+    """Record one round of the build (the first request, or a follow-up), for later follow-ups."""
+    state = last_build(root)
+    if state is None:
+        return
+    entry = {"request": request, "status": status, "summary": summary, "changed": list(changed),
+             "check_output": check_output[-600:] if status in ("failed", "stopped") else ""}
+    _save_state(root, {**state, "rounds": rounds_of(state)[-9:] + [entry]})
+
+
+ROUND_RESULT = {"passed": "done, checks passed", "failed": "checks still failing", "unverified": "built, not proven",
+                "unfinished": "unfinished (ran out of steps)", "nothing": "nothing was built",
+                "stopped": "stopped part-way (interrupted or an AI limit)"}
+
+
+def rounds_of(state) -> list:
+    """The build's rounds. Builds made before rounds were recorded (TaskMind 0.5.0 and older)
+    still have their first request, which counts as round 1."""
+    if "rounds" in state:  # recorded, even if still empty
+        return list(state["rounds"])
+    return [{"request": state["task"], "status": "", "summary": "", "changed": []}] if state.get("task") else []
+
+
+def history_text(state, limit=4000) -> str:
+    """The earlier rounds in plain words, for the AI doing the follow-up."""
+    lines = []
+    for i, r in enumerate(rounds_of(state), 1):
+        line = (f"Round {i}. The user asked: {r.get('request', '')[:400]}\n"
+                f"  Result: {ROUND_RESULT.get(r.get('status'), r.get('status') or 'not recorded')}. "
+                f"Files changed: {', '.join(r.get('changed') or []) or 'none'}.")
+        if r.get("summary"):
+            line += f"\n  What was done: {r['summary'][:600]}"
+        if r.get("check_output"):
+            line += f"\n  The last check said: {r['check_output']}"
+        lines.append(line)
+    text = "\n".join(lines)
+    return text if len(text) <= limit else "... (older rounds left out)\n" + text[-limit:]
 
 
 def current_branch(root) -> str:

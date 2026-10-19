@@ -2856,7 +2856,8 @@ class TestUndoAndLeftovers(TestCLI):
         code, out = self.run_cli("build", "Fix add", llm=self.fixing_llm())
         self.assertEqual(code, 1)
         self.assertIn("still on an unfinished build", out)
-        self.assertIn("tm build --undo", out)
+        self.assertIn("--undo", out)
+        self.assertIn("--more", out)
 
     def test_leftover_thrown_away_when_the_user_agrees(self):
         llm = FakeLLM(tool_call("write_file", path="notes.md", content="x\n"),
@@ -3032,3 +3033,107 @@ class TestInitAndMentionsCLI(TestCLI):
         code, out = self.run_cli("build", "Fix @calcc.py", "--yes", llm=llm)
         self.assertIn("Not found in this project, so not attached: @calcc.py", out)
         self.assertEqual(code, 0, out)
+
+
+class TestFollowUps(TestCLI):
+    """tm build --more: follow-ups remember earlier rounds; unfinished builds continue where they stopped."""
+
+    def setUp(self):
+        super().setUp()
+        self.cwd = os.getcwd()
+        self.root = build_repo(Path(self.tmp.name) / "moreproj")
+        os.chdir(self.root)
+
+    def tearDown(self):
+        os.chdir(self.cwd)
+        super().tearDown()
+
+    def branch(self):
+        return subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=self.root,
+                              capture_output=True, text=True).stdout.strip()
+
+    def calc(self):
+        return (self.root / "calc.py").read_text(encoding="utf-8")
+
+    def test_follow_up_after_a_kept_build_remembers_it(self):
+        first = FakeLLM(tool_call("edit_file", path="calc.py", old="a - b", new="a + b"),
+                        tool_call("finish", summary="add() now adds.", check_command=PASS_CHECK))
+        self.run_cli("build", "Fix add", "--yes", llm=first)
+        base = self.branch()
+        more = FakeLLM(tool_call("edit_file", path="calc.py", old="    return a + b\n",
+                                 new="    return a + b\n\n\ndef mul(a, b):\n    return a * b\n"),
+                       tool_call("finish", summary="Added mul().", check_command=PASS_CHECK))
+        code, out = self.run_cli("build", "--more", "also add multiply", "--yes", llm=more)
+        self.assertEqual(code, 0, out)
+        self.assertIn("Following up on TM-1 (round 2)", out)
+        goal = more.calls[0]["messages"][1]["content"]
+        self.assertIn("Round 1. The user asked: Fix add", goal)
+        self.assertIn("add() now adds.", goal)
+        self.assertIn("Task: also add multiply", goal)
+        self.assertEqual(self.branch(), base)  # kept again, back on the user's branch
+        self.assertIn("def mul", self.calc())
+        from taskmind import builder
+        self.assertEqual([r["request"] for r in builder.last_build(self.root)["rounds"]],
+                         ["Fix add", "also add multiply"])
+
+    def test_an_unfinished_build_continues_on_its_branch(self):
+        wrong = tool_call("edit_file", path="calc.py", old="a - b", new="a * b")
+        finish = tool_call("finish", summary="Done.", check_command=PASS_CHECK)
+        self.run_cli("build", "Fix add", "--yes", llm=FakeLLM(wrong, *[finish] * 4))  # fails: left on its branch
+        stuck = self.branch()
+        self.assertTrue(stuck.startswith("tm/"))
+        fix = FakeLLM(tool_call("edit_file", path="calc.py", old="a * b", new="a + b"),
+                      tool_call("finish", summary="Fixed.", check_command=PASS_CHECK))
+        code, out = self.run_cli("build", "--more", "--yes", llm=fix)  # no text: continue where it stopped
+        self.assertEqual(code, 0, out)
+        self.assertIn(f"Continuing on {stuck}", out)
+        goal = fix.calls[0]["messages"][1]["content"]
+        self.assertIn("checks still failing", goal)
+        self.assertIn("AssertionError", goal)  # what the failing check said
+        self.assertIn("Continue the earlier work", goal)
+        self.assertIn("a + b", self.calc())
+        self.assertFalse(self.branch().startswith("tm/"))  # kept and tidied away
+
+    def test_an_interrupted_build_can_be_continued(self):
+        from taskmind.llm import LLMError
+        self.run_cli("build", "Fix add", "--yes",
+                     llm=FakeLLM(tool_call("edit_file", path="calc.py", old="a - b", new="a  - b"),
+                                 LLMError("Daily free-tier limit reached")))
+        from taskmind import builder
+        self.assertEqual(builder.last_build(self.root)["rounds"][-1]["status"], "stopped")
+        fix = FakeLLM(tool_call("edit_file", path="calc.py", old="a  - b", new="a + b"),
+                      tool_call("finish", summary="Fixed.", check_command=PASS_CHECK))
+        code, out = self.run_cli("build", "--more", "--yes", llm=fix)
+        self.assertEqual(code, 0, out)
+        self.assertIn("stopped part-way", fix.calls[0]["messages"][1]["content"])
+
+    def test_hand_edits_on_the_build_branch_are_kept(self):
+        finish = tool_call("finish", summary="Done.", check_command=PASS_CHECK)
+        self.run_cli("build", "Fix add", "--yes",
+                     llm=FakeLLM(tool_call("write_file", path="notes.md", content="x\n"), *[finish] * 4))
+        (self.root / "notes.md").write_text("my own note\n", encoding="utf-8")
+        fix = FakeLLM(tool_call("edit_file", path="calc.py", old="a - b", new="a + b"),
+                      tool_call("finish", summary="Fixed.", check_command=PASS_CHECK))
+        with mock.patch.object(cli, "interactive", return_value=True):
+            code, out = self.run_cli("build", "--more", "fix it", llm=fix, stdin="y\ny\n")
+        self.assertEqual(code, 0, out)
+        self.assertIn("You changed these files", out)
+        self.assertEqual((self.root / "notes.md").read_text(encoding="utf-8"), "my own note\n")
+
+    def test_nothing_to_follow_up(self):
+        code, out = self.run_cli("build", "--more", "anything", llm=FakeLLM())
+        self.assertEqual(code, 1)
+        self.assertIn("no earlier build in this folder", out)
+
+    def test_builds_from_before_rounds_were_recorded_can_be_followed_up(self):
+        from taskmind import builder
+        text = builder.history_text({"task": "Make the year automatic", "kept": True})
+        self.assertIn("Round 1. The user asked: Make the year automatic", text)
+        self.assertIn("not recorded", text)
+        self.assertEqual(len(builder.rounds_of({"task": "Make the year automatic"})), 1)
+
+    def test_history_stays_small(self):
+        from taskmind import builder
+        state = {"rounds": [{"request": "x" * 400, "status": "passed", "summary": "y" * 600, "changed": ["a"]}] * 10}
+        self.assertLessEqual(len(builder.history_text(state, limit=2000)), 2100)
+        self.assertTrue(builder.history_text(state, limit=2000).startswith("... (older rounds left out)"))

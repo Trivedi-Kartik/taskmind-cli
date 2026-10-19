@@ -155,12 +155,35 @@ see your API keys, tokens or passwords.
 | `--simple` | Explain the result without technical words |
 | `--voice` | Say what to build |
 | `-y`, `--yes` | Allow risky commands and keep the result if the checks pass (for scripts) |
+| `tm build --more "..."` | Follow up on the last build; with no text, continue an unfinished one |
 | `tm build --undo` | Take back the last build. An unfinished one is thrown away; a kept one is taken out of your branch and set aside on a `tm/undone-...` branch, so nothing is lost |
 
 Summaries come in your language: `tm me --language hinglish` (or `hindi`, `english`).
 
 **Tips:** describe the result you want and what "done" looks like; for websites, list the
 sections and effects. Big or vague tasks go better [planned first](#bigger-work-plan-first).
+
+### Follow-ups
+
+Not quite right, or want more? Follow up on the last build, in plain words:
+
+```sh
+tm build "add online ordering to the menu"
+tm build --more "make the order button bigger and green"
+tm build --more "also send the order total by WhatsApp"
+```
+
+Each follow-up knows what the earlier rounds asked for, what changed and how it went, so
+"make *that* button bigger" works. If the last build is unfinished (its checks failed, you
+pressed Ctrl+C, or the AI hit a limit), `--more` carries on **on the same branch**. Run it
+with no text to continue where it stopped:
+
+```sh
+tm build --more          # pick up an unfinished build
+```
+
+If you edited files by hand on an unfinished build's branch, TaskMind offers to keep your edits
+as part of the work. Every round is still checked, and `tm build --undo` takes back the last one.
 
 ### Working on an existing project
 
@@ -285,7 +308,7 @@ shows every option.
 
 | Command | What it does |
 |---|---|
-| `tm build "..." \| <id>` | Build it ([details](#build-it-tm-build)); `@file` mentions; `--new`, `--check`, `--undo`, `--simple`, `--voice`, `-y` |
+| `tm build "..." \| <id>` | Build it ([details](#build-it-tm-build)); `@file` mentions; `--more`, `--new`, `--check`, `--undo`, `--simple`, `--voice`, `-y` |
 | `tm init` | Study this project and write `TASKMIND.md`, the notes every build reads first |
 | `tm add "title"` | Write a task down (`--due friday`, `-p high`, `--remind "tomorrow 9am"`, `--no-repo`, `--voice`) |
 | `tm list` / `tm show <id>` / `tm today` | Your tasks / everything about one / what to do today (`--speak` reads it out) |
@@ -367,6 +390,7 @@ instead. `tm show <id>` lists which AI did what.
 | "changes that aren't saved in git" | Answer y to let TaskMind save them, or commit them yourself |
 | "still on an unfinished build" | Answer y to throw it away, or `tm build --undo` |
 | A build went wrong | `tm build --undo` puts the folder back as it was |
+| A build stopped part-way (limit reached, Ctrl+C) | `tm build --more` continues it |
 | "doesn't understand: ..." | Put text with spaces in quotes |
 | Every provider failed | `tm doctor --all` shows which one and why |
 | "Something went wrong inside TaskMind" | A bug: `tm report-bug`. Your tasks are safe (daily backups) |
@@ -376,7 +400,7 @@ instead. `tm show <id>` lists which AI did what.
 ## Development
 
 ```sh
-python3 -m unittest discover -s tests     # 314 unit tests, no AI calls, no dependencies
+python3 -m unittest discover -s tests     # 325 unit tests, no AI calls, no dependencies
 python3 tests/live_smoke.py               # every command end to end, with your real AI provider
 python3 scripts/build.py                  # refresh the bundled guide, build dist/taskmind.pyz
 ```

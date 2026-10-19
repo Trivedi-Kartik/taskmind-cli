@@ -229,7 +229,7 @@ git add . && git commit -qm "Notes app" && echo ready
 
 | ID | Steps | Expect |
 |---|---|---|
-| P1 | `python3 scripts/build.py`, then `python3 dist/taskmind.pyz --version` and `python3 dist/taskmind.pyz help reminders` | taskmind 0.5.0, and the help works from the single file |
+| P1 | `python3 scripts/build.py`, then `python3 dist/taskmind.pyz --version` and `python3 dist/taskmind.pyz help reminders` | taskmind 0.6.0, and the help works from the single file |
 | P2 (optional) | If you have pipx: `pipx install /home/user/kartik/folder` then `tm --version` in a new terminal | The `tm` command works from anywhere |
 | P3 | In a new project folder (any `git init` folder with a file), `tm add "x"` then `tm go <id>` | First it asks "Allow this for this project?", naming your AI provider; answer **n**: "nothing was sent". Run again and answer y: it doesn't ask a third time |
 | P4 | `tm report-bug "testing the report"` | A saved report file; open it: version, system, provider name, recent errors, and **no API key** |
@@ -260,6 +260,15 @@ git add -A && git commit -qm "start"
 | Q11 | Edit a file without committing, then `tm build "anything"` | It lists your change and offers to save it for you; answer y and the build goes ahead |
 | Q12 | `cd ~/tm-tests && tm build --new page-test "a one-page site with a button that counts clicks"` | The output shows "open the page in a hidden browser" and "Checked by TaskMind: ... browser check" |
 | Q8 | Try it on a real project of yours, with a small real task | Honest question: did you keep the result? How long did it take? Was anything wrong? (This is the most useful feedback of all) |
+
+## T. Follow-ups
+
+| ID | Steps | Expect |
+|---|---|---|
+| T1 | In ~/tm-tests/coffice-cafe: `tm build "add a 'Back to top' button"`, keep it, then `tm build --more "make that button round and brown"` | "↪ Following up on TM-n (round 2)". The button from round 1 is changed (not a second button) |
+| T2 | Start a build and press Ctrl+C part-way, then `tm build --more` | "Continuing on tm/...": it picks up the unfinished work instead of starting over |
+| T3 | After a build whose checks failed (left on its branch), edit a file by hand, then `tm build --more` | "You changed these files on the build's branch ... Keep your changes?"; answer y and your edit is still there afterwards |
+| T4 | In a folder with no earlier build: `tm build --more "x"` | "There's no earlier build in this folder to follow up" |
 
 ## S. Existing projects: notes and @mentions
 
