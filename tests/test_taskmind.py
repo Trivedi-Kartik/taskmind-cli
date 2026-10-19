@@ -2876,3 +2876,58 @@ class TestUndoAndLeftovers(TestCLI):
         self.assertIn("?? mine.txt", out)
         log = subprocess.run(["git", "log", "--format=%s"], cwd=self.root, capture_output=True, text=True).stdout
         self.assertIn("Saved before a TaskMind build", log)
+
+
+class TestUpdates(TestCLI):
+    def test_version_comparison(self):
+        from taskmind import updates
+        self.assertTrue(updates.newer("0.10.0", "0.9.9"))
+        self.assertFalse(updates.newer("0.4.0", "0.4.0"))
+        self.assertFalse(updates.newer(None, "0.4.0"))
+
+    def test_checks_github_at_most_once_a_day(self):
+        from taskmind import updates
+        with mock.patch.dict(os.environ, {"CI": ""}), \
+                mock.patch.object(updates, "latest_version", return_value="9.0.0") as latest:
+            self.assertEqual(updates.check_daily(), "9.0.0")
+            self.assertEqual(updates.check_daily(), "9.0.0")
+        self.assertEqual(latest.call_count, 1)
+
+    def test_check_can_be_turned_off(self):
+        from taskmind import updates
+        self.run_cli("config", "--update-check", "off")
+        with mock.patch.dict(os.environ, {"CI": ""}), mock.patch.object(updates, "latest_version") as latest:
+            self.assertIsNone(updates.check_daily())
+        latest.assert_not_called()
+
+    def test_update_when_already_newest(self):
+        from taskmind import __version__, updates
+        with mock.patch.object(updates, "latest_version", return_value=__version__):
+            code, out = self.run_cli("update")
+        self.assertEqual(code, 0)
+        self.assertIn("You have the newest TaskMind", out)
+
+    def test_update_runs_the_right_command_and_shows_whats_new(self):
+        from taskmind import updates
+        with mock.patch.object(updates, "latest_version", return_value="9.0.0"), \
+                mock.patch.object(updates, "whats_new", return_value="## 9.0.0\n- Flying cars"), \
+                mock.patch.object(updates, "install_kind", return_value="pipx"), \
+                mock.patch("shutil.which", return_value="/usr/bin/pipx"), \
+                mock.patch.object(cli.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as run:
+            code, out = self.run_cli("update", "--yes")
+        self.assertEqual(code, 0, out)
+        self.assertIn("Flying cars", out)
+        self.assertIn("Updated to TaskMind 9.0.0", out)
+        self.assertEqual(run.call_args[0][0][:3], ["pipx", "install", "--force"])
+
+    def test_offline_update_says_so(self):
+        from taskmind import updates
+        with mock.patch.object(updates, "latest_version", return_value=None):
+            code, out = self.run_cli("update")
+        self.assertEqual(code, 1)
+        self.assertIn("Couldn't reach GitHub", out)
+
+    def test_changelog_lists_the_current_version(self):
+        from taskmind import __version__
+        changelog = (Path(__file__).resolve().parent.parent / "CHANGELOG.md").read_text(encoding="utf-8")
+        self.assertIn(f"## {__version__} ", changelog)  # every release says what's new

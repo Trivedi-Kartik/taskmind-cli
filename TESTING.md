@@ -229,7 +229,7 @@ git add . && git commit -qm "Notes app" && echo ready
 
 | ID | Steps | Expect |
 |---|---|---|
-| P1 | `python3 scripts/build.py`, then `python3 dist/taskmind.pyz --version` and `python3 dist/taskmind.pyz help reminders` | taskmind 0.3.0, and the help works from the single file |
+| P1 | `python3 scripts/build.py`, then `python3 dist/taskmind.pyz --version` and `python3 dist/taskmind.pyz help reminders` | taskmind 0.4.0, and the help works from the single file |
 | P2 (optional) | If you have pipx: `pipx install /home/user/kartik/folder` then `tm --version` in a new terminal | The `tm` command works from anywhere |
 | P3 | In a new project folder (any `git init` folder with a file), `tm add "x"` then `tm go <id>` | First it asks "Allow this for this project?", naming your AI provider; answer **n**: "nothing was sent". Run again and answer y: it doesn't ask a third time |
 | P4 | `tm report-bug "testing the report"` | A saved report file; open it: version, system, provider name, recent errors, and **no API key** |
@@ -260,6 +260,14 @@ git add -A && git commit -qm "start"
 | Q11 | Edit a file without committing, then `tm build "anything"` | It lists your change and offers to save it for you; answer y and the build goes ahead |
 | Q12 | `cd ~/tm-tests && tm build --new page-test "a one-page site with a button that counts clicks"` | The output shows "open the page in a hidden browser" and "Checked by TaskMind: ... browser check" |
 | Q8 | Try it on a real project of yours, with a small real task | Honest question: did you keep the result? How long did it take? Was anything wrong? (This is the most useful feedback of all) |
+
+## R. Updates
+
+| ID | Steps | Expect |
+|---|---|---|
+| R1 | `tm update` | "You have the newest TaskMind (0.4.0)", or the new version, what's new, and "Update now?". After updating, `tm --version` shows the new number and `tm list` still shows your tasks |
+| R2 | When a newer version is out, run any command (e.g. `tm list`) | One dim line at the end: "TaskMind x.y.z is available ... Update with: tm update". Only once that day |
+| R3 | `tm config --update-check off`, then `tm list` | No update note. Turn back on with `--update-check on` |
 
 ## J. Automatic checks (optional, any time)
 

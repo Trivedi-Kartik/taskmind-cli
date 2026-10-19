@@ -44,7 +44,8 @@ What's measured from now on is **whether real tasks get done**, graded by checks
       same engine, with the built app running somewhere they can open (a link)
 - [ ] **For teams:** GitHub issue in → pull request out (`tm build` on an issue, then a PR
       with the test results), so the whole team can use it without installing anything
-- [ ] Publish to PyPI (`pipx install taskmind-cli`), release notes, a short demo video
+- [x] `tm update`, a daily "new version" note and CHANGELOG.md
+- [ ] Publish to PyPI (`pipx install taskmind-cli`), a short demo video
 
 ## Already done (foundations)
 

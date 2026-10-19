@@ -724,6 +724,51 @@ def cmd_tutorial(args):
     return tutorial.run(main)
 
 
+def cmd_update(args):
+    from taskmind import updates
+    with ui.working("Checking for a new version..."):
+        latest = updates.latest_version(timeout=10)
+    if latest is None:
+        raise CLIError("Couldn't reach GitHub to check for a new version. Check your internet connection "
+                       "and try again.")
+    if not updates.newer(latest):
+        ui.out(f"You have the newest TaskMind ({__version__}).")
+        return 0
+    ui.out(f"[bold]TaskMind {latest}[/bold] is available (you have {__version__}).")
+    news = updates.whats_new()
+    if news:
+        ui.out("\n[bold]What's new[/bold]")
+        ui.plain(news)
+    kind = updates.install_kind()
+    command = updates.update_command(kind)
+    if command is None:
+        how = ("Download the new taskmind.pyz from " + updates.REPO if kind == "pyz" else
+               f"pipx install --force {updates.SOURCE}")
+        ui.out(f"\nUpdate it with: {ui.escape(how)}")
+        return 1
+    shown = " ".join(command)
+    if not args.yes and not (interactive() and ui.confirm(f"\nUpdate now? (runs: {ui.escape(shown)})",
+                                                          default=True)):
+        ui.out(f"Not updated. Any time: tm update (or {ui.escape(shown)})")
+        return 1
+    if subprocess.run(command).returncode != 0:
+        raise CLIError(f"The update didn't finish (see above). You can run it yourself: {shown}")
+    ui.out(f"[green]Updated to TaskMind {latest}.[/green] Your tasks, settings and keys are unchanged "
+           "(they live in ~/.taskmind).")
+    return 0
+
+
+def _mention_update():
+    """One line, at most once a day, when a newer TaskMind is out. Never gets in the way."""
+    from taskmind import updates
+    try:
+        latest = updates.check_daily()
+    except Exception:  # noqa: BLE001 - a failed check must never break the user's command
+        return
+    if latest:
+        ui.out(f"\n[dim]✨ TaskMind {latest} is available (you have {__version__}). Update with: tm update[/dim]")
+
+
 def cmd_setup(args):
     run_setup()
 
@@ -803,6 +848,8 @@ def cmd_config(args):
             raise CLIError("--remind-time takes a time like 09:00 or 8:30am.")
         hm = reminders.parse_time_of_day(args.remind_time)
         cfg.setdefault("reminders", {})["time"], changed = f"{hm[0]:02d}:{hm[1]:02d}", True
+    if args.update_check is not None:
+        cfg["update_check"], changed = args.update_check, True
     if args.voice_output is not None:
         cfg.setdefault("voice", {})["output"], changed = args.voice_output, True
     if args.voice_name is not None:
@@ -1538,6 +1585,8 @@ def build_parser():
     sp = add("help", cmd_help, "Help topics from the guide, offline; `tm help <topic>`")
     sp.add_argument("topic", nargs="*")
     add("setup", cmd_setup, "Guided setup: choose an AI provider, add its key, pick a model")
+    sp = add("update", cmd_update, "Install the newest TaskMind (your tasks, settings and keys stay)")
+    sp.add_argument("-y", "--yes", action="store_true", help="Update without asking")
 
     sp = add("voice", cmd_voice, "Check voice input/output; --test to try it")
     sp.add_argument("--test", action="store_true", help="Speak a test sentence and try the microphone")
@@ -1561,6 +1610,8 @@ def build_parser():
                     help="simple: plain wording for everyday tasks, no git linking")
     sp.add_argument("--remind-time", metavar="HH:MM", help="Daily time for due-date and overdue "
                                                              "reminders (default 09:00)")
+    sp.add_argument("--update-check", choices=["on", "off"], help="Once a day, say when a newer TaskMind "
+                                                                    "is available (default on)")
     sp.add_argument("--voice-output", choices=voice.OUTPUT_MODES,
                     help="How TaskMind speaks: auto (Groq voice, else this computer's voice), groq, local, off")
     sp.add_argument("--voice-name", choices=voice.TTS_VOICES, help="Groq voice (default autumn)")
@@ -1785,4 +1836,6 @@ def _main(argv=None) -> int:
                  "were saved (without keys or code); run `tm report-bug` to send them. "
                  "Your tasks are safe: TaskMind keeps daily backups in ~/.taskmind/backups.")
         return 1
+    if interactive() and sys.stdout.isatty() and args.func is not cmd_update:
+        _mention_update()
     return code or 0
