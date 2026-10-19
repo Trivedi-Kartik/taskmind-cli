@@ -89,11 +89,12 @@ def attachments(repo: Repo, text, limit=24_000) -> tuple:
     return "\n\n".join(parts), attached
 
 
-def code_context(repo: Repo, text, limit=4000, focus=(), event=None, excerpt_chars=0) -> tuple:
+def code_context(repo: Repo, text, limit=4000, focus=(), event=None, excerpt_chars=0, min_files=None,
+                 excerpt_lines=45, excerpt_count=3) -> tuple:
     """(text for the AI, info) from the code index: a short map of the project and the files the
     request most likely concerns. ("", {}) for small projects, which the AI can simply list."""
     from taskmind.codeindex import MAP_MIN_FILES
-    if not repo.index_wanted(MAP_MIN_FILES):
+    if not repo.index_wanted(MAP_MIN_FILES if min_files is None else min_files):
         return "", {}
     from taskmind.codeindex import Index
     if event and not Index.saved_exists(repo):
@@ -111,13 +112,13 @@ def code_context(repo: Repo, text, limit=4000, focus=(), event=None, excerpt_cha
     room = excerpt_chars
     if room >= 1200:  # roomy providers: show the code itself, not just where it is
         pieces = []
-        for path, qualified, line, end in index.best_definitions(text, limit=4, exclude=set(focus)):
-            code = index.excerpt(path, line, end, max_lines=45 if room >= 4000 else 25)
+        for path, qualified, line, end in index.best_definitions(text, limit=excerpt_count + 1, exclude=set(focus)):
+            code = index.excerpt(path, line, end, max_lines=excerpt_lines if room >= 4000 else 25)
             if code and len(code) <= room:
                 pieces.append(f"--- {path}: {qualified} ---\n{code}")
                 shown.append(f"{path}:{qualified}")
                 room -= len(code)
-            if len(pieces) >= 3:
+            if len(pieces) >= excerpt_count:
                 break
         if pieces:
             parts.append("The code of the best-matching definitions, so you can start from it (they may not "

@@ -45,6 +45,10 @@ What's measured from now on is **whether real tasks get done**, graded by checks
       of the best-matching functions. One task: 25 steps instead of 44. Still to do: more
       measurements on more projects and languages, and import links for Go, Rust and Java
 
+- [x] **5. Quick mode:** TaskMind finds the code, the AI answers once with the edits (5 requests and 8 seconds
+      instead of 25-44 steps on one real task); falls back to step-by-step with a reason; every build
+      reports its requests and tokens. Still to do: measure on many tasks (`tm bench`) and on other models
+
 **Next ideas, found while testing (after 4):**
 
 - [ ] **Honest summaries:** compare what the AI *says* it changed with what it *did* (seen live:

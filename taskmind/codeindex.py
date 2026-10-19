@@ -476,6 +476,11 @@ class Index:
     def _fmt_symbol(self, path, line, kind, qualified, _end=None):
         return f"{path}:{line} {KIND_WORD.get(kind, kind)} {qualified}"
 
+    def definitions(self, name) -> list:
+        """[(path, line, kind, qualified name, last line)] of every definition with this (bare or qualified) name."""
+        self._derive()
+        return self.by_name.get((name or "").lower(), [])
+
     def find_symbol(self, name, limit=12) -> str:
         self._derive()
         name = (name or "").strip().strip("()")

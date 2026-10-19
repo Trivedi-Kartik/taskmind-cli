@@ -1307,9 +1307,18 @@ def _offer_new_folder(root, text, yes):
 
 
 def _show_build_event(kind, name=None, args=None, result=None, command=None, code=None, output=None,
-                      notes=None, attached=None, index=None, files=None):
+                      notes=None, attached=None, index=None, files=None, stage=None, need=None, reason=None):
     args = args or {}
-    if kind == "indexing":
+    if kind == "quick":
+        ui.out("  ⚡ [bold]Quick mode[/bold]: I find the code myself and the AI answers with the edit, in a few "
+               "requests instead of dozens")
+    elif kind == "quick_asked":
+        ui.out(f"  🔎 The AI asked to see: {ui.escape(', '.join(need)[:150])}")
+    elif kind == "quick_retry":
+        ui.out(f"  ↻ [yellow]Its edits didn't apply ({ui.escape(reason)}); asking again[/yellow]")
+    elif kind == "escalate":
+        ui.out(f"  ↪ [yellow]Switching to step-by-step mode: {ui.escape(reason)}[/yellow]")
+    elif kind == "indexing":
         ui.out(f"  🗺  Reading {files:,} code files once to build the code index (later runs only read what changed)...")
     elif kind == "context":
         if notes:
@@ -1437,8 +1446,11 @@ def cmd_build(args):
                f"Throw it away: tm build --undo[/dim]")
 
     profile = insights.profile(cfg)
+    from taskmind import quick
+    # Quick mode (a few AI requests) unless asked for the step-by-step agent; a new project is built step by step.
+    runner = builder.build if (args.agent or args.new) else quick.build
     try:
-        report = AI("build", task, cands).run(lambda llm: builder.build(
+        report = AI("build", task, cands).run(lambda llm: runner(
             llm, text, ws, check=args.check or "", max_steps=args.max_steps, language=profile["language"],
             simple=simple_mode() or args.simple, on_event=_show_build_event,
             earlier=builder.history_text(earlier) if earlier else ""))
@@ -1453,6 +1465,11 @@ def cmd_build(args):
     ui.out("\n" + BUILD_RESULT[report["status"]])
     if report.get("reason"):
         ui.out(ui.escape(report["reason"]))
+    if report.get("requests"):
+        used = f"{report['requests']} AI request{'s' if report['requests'] != 1 else ''}"
+        if report.get("tokens"):
+            used += f", about {max(1, round(report['tokens'] / 1000))}k tokens"
+        ui.out(f"[dim]{'⚡ Quick mode' if report.get('mode') == 'quick' else 'Step-by-step mode'}: {used}[/dim]")
     if report["check"]:
         ui.out(f"[dim]Checked by TaskMind: {ui.escape(' '.join(report['check'].split())[:200])}[/dim]")
     if report.get("note"):
@@ -1888,6 +1905,8 @@ def build_parser():
                     'tm build --more "make the button bigger" (no text: continue where it stopped)')
     sp.add_argument("--undo", action="store_true", help="Take back the last build in this folder "
                                                          "(kept or not); nothing else is touched")
+    sp.add_argument("--agent", action="store_true", help="Work step by step with tools instead of quick mode "
+                                                         "(slower and uses many more AI requests)")
     sp.add_argument("--max-steps", type=int, default=None, help=argparse.SUPPRESS)
     sp.add_argument("--auto-keep", action="store_true", help=argparse.SUPPRESS)  # chat: keep it when checks pass
     sp.add_argument("--chat", action="store_true", help=argparse.SUPPRESS)       # chat: session-style hints

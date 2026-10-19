@@ -148,6 +148,31 @@ Added a reset-password flow ... (the AI's summary)
 Keep it (add it to your main branch)? [Y/n]
 ```
 
+**Quick mode: a few AI requests, not dozens.** Step-by-step agents make one AI request per step and re-send
+the whole conversation each time, so even a small change can use 25 to 60 requests. On a free tier that is one
+task a day. By default `tm build` works differently: TaskMind finds the code itself (project notes, the files you
+pointed at with `@`, the code index, or the whole project when it's small), sends it once, and the AI answers with
+the edits. TaskMind applies them, runs the project's checks, and sends back only what failed.
+
+```
+  ⚡ Quick mode: I find the code myself and the AI answers with the edit, in a few requests instead of dozens
+  🔎 The AI asked to see: Index.summary
+  ✏️  taskmind/codeindex.py
+  ✏️  taskmind/cli.py
+✅ Done and checked.
+⚡ Quick mode: 5 AI requests, about 22k tokens
+```
+
+What it measured so far (Gemini Flash Lite): a tiny change in a small site took **3 requests, 7 seconds and
+about 4,000 tokens**; a two-file change in a 36-file project took **5 requests and 8 seconds** in an experiment,
+against 25 to 44 steps and 4 to 10 minutes step by step, with the same correct result. Bigger, multi-file
+tasks are harder for it: the AI sometimes writes edit text that doesn't match the file, and TaskMind then
+shows it the real text and asks again, or hands over to the step-by-step mode by itself and says why (the AI
+says it needs exploring, its edits won't apply, or the checks still fail after two quick fixes). New projects
+and providers with a tiny memory (Groq's free tier) always work step by step.
+`tm build --agent` (or `TASKMIND_QUICK=off`) forces the step-by-step mode. Every build ends with the number of AI
+requests and tokens it used, so you can see which mode is cheaper for your own tasks.
+
 **How it works**
 
 1. **Where:** inside your project. Outside one (say your home folder), TaskMind offers a
@@ -193,6 +218,7 @@ see your API keys, tokens or passwords.
 | `tm build 3` | Build task 3, following its plan (see [plan first](#bigger-work-plan-first)) |
 | `tm build --new FOLDER "..."` | Start a new project in that folder |
 | `--check "COMMAND"` | The command that proves it works, e.g. `--check "pytest tests/test_export.py"` |
+| `--agent` | Work step by step with tools instead of [quick mode](#build-it-tm-build): slower, many more AI requests |
 | `--simple` | Explain the result without technical words |
 | `--voice` | Say what to build |
 | `-y`, `--yes` | Allow risky commands and keep the result if the checks pass (for scripts) |
@@ -487,7 +513,7 @@ instead. `tm show <id>` lists which AI did what.
 ## Development
 
 ```sh
-python3 -m unittest discover -s tests     # 393 unit tests, no AI calls, no dependencies
+python3 -m unittest discover -s tests     # 418 unit tests, no AI calls, no dependencies
 python3 tests/live_smoke.py               # every command end to end, with your real AI provider
 python3 scripts/build.py                  # refresh the bundled guide, build dist/taskmind.pyz
 ```

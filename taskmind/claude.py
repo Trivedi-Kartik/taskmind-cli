@@ -111,7 +111,10 @@ class ClaudeLLM:
         calls = [{"id": b.id, "type": "function",
                   "function": {"name": b.name, "arguments": json.dumps(b.input)}}
                  for b in response.content if b.type == "tool_use"]
-        return {"role": "assistant", "content": text, "tool_calls": calls or None, "_raw": response.content}
+        usage = getattr(response, "usage", None)
+        return {"role": "assistant", "content": text, "tool_calls": calls or None, "_raw": response.content,
+                "_usage": {"prompt_tokens": getattr(usage, "input_tokens", 0) or 0,
+                           "completion_tokens": getattr(usage, "output_tokens", 0) or 0} if usage else None}
 
     def _call(self, fn, *args, **kwargs):
         a = self.anthropic

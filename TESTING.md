@@ -229,7 +229,7 @@ git add . && git commit -qm "Notes app" && echo ready
 
 | ID | Steps | Expect |
 |---|---|---|
-| P1 | `python3 scripts/build.py`, then `python3 dist/taskmind.pyz --version` and `python3 dist/taskmind.pyz help reminders` | taskmind 0.8.0, and the help works from the single file |
+| P1 | `python3 scripts/build.py`, then `python3 dist/taskmind.pyz --version` and `python3 dist/taskmind.pyz help reminders` | taskmind 0.9.0, and the help works from the single file |
 | P2 (optional) | If you have pipx: `pipx install /home/user/kartik/folder` then `tm --version` in a new terminal | The `tm` command works from anywhere |
 | P3 | In a new project folder (any `git init` folder with a file), `tm add "x"` then `tm go <id>` | First it asks "Allow this for this project?", naming your AI provider; answer **n**: "nothing was sent". Run again and answer y: it doesn't ask a third time |
 | P4 | `tm report-bug "testing the report"` | A saved report file; open it: version, system, provider name, recent errors, and **no API key** |
@@ -260,6 +260,16 @@ git add -A && git commit -qm "start"
 | Q11 | Edit a file without committing, then `tm build "anything"` | It lists your change and offers to save it for you; answer y and the build goes ahead |
 | Q12 | `cd ~/tm-tests && tm build --new page-test "a one-page site with a button that counts clicks"` | The output shows "open the page in a hidden browser" and "Checked by TaskMind: ... browser check" |
 | Q8 | Try it on a real project of yours, with a small real task | Honest question: did you keep the result? How long did it take? Was anything wrong? (This is the most useful feedback of all) |
+
+## W. Quick mode
+
+| ID | Steps | Expect |
+|---|---|---|
+| W1 | In the cafe project: `tm build "make the footer tagline italic"` | "⚡ Quick mode", one or two ✏️ lines, ✅ Done and checked, and "Quick mode: 1 AI request(s), about Nk tokens". It takes seconds, not minutes |
+| W2 | The same request with `--agent` (use `tm build --undo` between) | Step-by-step: many 🔍 lines, "Step-by-step mode: N AI requests". Compare N and the time with W1: your own measurement |
+| W3 | A bigger request ("add online ordering": a new page, shared menu data, changes to two files) | Either it finishes in quick mode, or you see "↪ Switching to step-by-step mode: ..." with a reason and it finishes that way. Either is fine; a silent failure is not |
+| W4 | In `tm`, type a request, then "make it bigger" | Both are quick builds; the second knew what "it" was |
+| W5 | Free tier check: with only a free key, do 3 small changes in a row | Roughly how many requests does each use (printed after each build), and do you hit the daily limit sooner or later than before? |
 
 ## V. The session (just `tm`)
 

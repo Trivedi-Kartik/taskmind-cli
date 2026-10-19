@@ -2,6 +2,17 @@
 
 Update with `tm update`. Your tasks, settings and keys are kept.
 
+## 0.9.0 (2026-10-19)
+
+- **Quick mode, the new default for `tm build` and the session.** TaskMind finds the code itself and the AI
+  answers once with the edits, instead of searching step by step. On a real task: 5 AI requests and 8 seconds
+  instead of 25 to 44 steps and 4 to 10 minutes. That is what makes free tiers usable: a small task no longer
+  uses up the day's quota. It hands over to the step-by-step mode, and says why, when a task doesn't suit it.
+  `tm build --agent` forces the step-by-step mode.
+- **Every build reports its AI requests and tokens** ("Quick mode: 5 AI requests, about 22k tokens").
+- Small projects are shown to the AI in full; bigger ones as a map plus the files and functions the request
+  concerns, and the AI can ask for more (a function, an outline, a line range, a text search).
+
 ## 0.8.0 (2026-10-19)
 
 - **A session, like Claude Code, Codex and Gemini.** Just type `tm` in a terminal: a prompt where you say

@@ -209,8 +209,10 @@ class Workspace:
             raise ValueError("TaskMind manages .git itself")
         return path
 
-    def write(self, rel, content) -> str:
-        if len(content) > MAX_WRITE:
+    def write(self, rel, content, limit=True) -> str:
+        """Create or replace a file. `limit` guards what the AI writes from scratch; the result of editing an
+        existing big file may legitimately be larger."""
+        if limit and len(content) > MAX_WRITE:
             raise ValueError(f"Too big for one write ({len(content)} characters); split it into smaller files")
         path = self._target(rel)
         existed = path.exists()
@@ -416,8 +418,65 @@ def _chat(llm, messages, budget, max_tokens, tools):
                                                             f"{', '.join(t['function']['name'] for t in tools)}."})
 
 
+class Meter:
+    """What a build asked of the AI: requests and (when the provider says) tokens."""
+
+    def __init__(self):
+        self.requests = self.prompt = self.completion = 0
+
+    def add(self, reply):
+        self.requests += 1
+        usage = reply.get("_usage") or {}
+        self.prompt += int(usage.get("prompt_tokens") or 0)
+        self.completion += int(usage.get("completion_tokens") or 0)
+
+    @property
+    def tokens(self) -> int:
+        return self.prompt + self.completion
+
+
+def run_checks(ws, known_check, proposed, browser, event, report) -> tuple:
+    """Prove the work the way the project does: its tests (else the AI's own command), and web pages
+    opened in a hidden browser. Fills report["check"], ["check_output"] and ["note"].
+    Returns (verdict, exit code, output): verdict is "passed", "failed" or "unverified"."""
+    # The project's tests may only exist now (the AI wrote them), so look again. TaskMind's own detection
+    # comes before the AI's command: an AI command that finds no tests (seen live: unittest exit code 5)
+    # sends it off "fixing" code that works.
+    command = known_check or detect_check(ws.root) or str(proposed or "").strip()
+    web = webcheck.is_web_project(ws.root)
+    if command and command_risk(command)[0] != "ok":
+        report.update(check=command, check_output="TaskMind won't run this check by itself: "
+                                                   + command_risk(command)[1])
+        return "unverified", 0, report["check_output"]
+    if not command and not web:
+        return "unverified", 0, ""
+    code, output, checks = 0, "", []
+    if command:
+        checks.append(command)
+        event("check", command=command)
+        code, output = run_shell(command, ws.root, ws.timeout)
+        event("checked", command=command, code=code, output=output)
+    if code == 0 and web:
+        # A test can pass while the page is broken (seen live: a test that only checked the
+        # files exist), so web pages are also opened in a real browser.
+        event("check", command="open the page in a hidden browser")
+        result = webcheck.check(ws.root, browser=browser)
+        checks.append("browser check" if result["browser"] else "file links (no browser found)")
+        if result["problems"]:
+            code, output = 1, "TaskMind checked the page and found:\n- " + "\n- ".join(result["problems"])
+        elif not result["browser"]:
+            report["note"] = ("No Chrome, Chromium or Edge was found, so the page wasn't opened in a "
+                              "browser; only its file links were checked.")
+            if not command:
+                report["check"] = " + ".join(checks)
+                return "unverified", 0, output
+        event("checked", command=checks[-1], code=code, output=output)
+    report["check"], report["check_output"] = " + ".join(checks), output
+    return ("passed" if code == 0 else "failed"), code, output
+
+
 def build(llm, task, ws: Workspace, check="", max_steps=None, fix_rounds=3, language="auto", simple=False,
-          on_event=None, budget=None, browser=None, earlier="") -> dict:
+          on_event=None, budget=None, browser=None, earlier="", meter=None, continuing=True) -> dict:
     """Do the task in the workspace. Returns a report:
 
     status: "passed" (the check ran and passed), "failed" (the check kept failing),
@@ -435,8 +494,15 @@ def build(llm, task, ws: Workspace, check="", max_steps=None, fix_rounds=3, lang
     elif budget >= 30_000:
         ws.max_chars, ws.max_lines = 8000, 300
     known_check = check or detect_check(ws.root)
-    goal = (f"This continues earlier work in this project. What happened so far (it's in the code now; "
-            f"read the files before changing them):\n{earlier}\n\nThe user now asks for more.\n\n" if earlier else "")
+    meter = meter or Meter()
+    if not earlier:
+        goal = ""
+    elif continuing:
+        goal = (f"This continues earlier work in this project. What happened so far (it's in the code now; "
+                f"read the files before changing them):\n{earlier}\n\nThe user now asks for more.\n\n")
+    else:
+        goal = (f"A faster first attempt at this task was made before you. What happened (any changes are in the "
+                f"code now; read the files before changing them):\n{earlier}\n\nFinish the task from there.\n\n")
     goal += (f"Task: {task}\n\nYou are already inside the project's folder ({ws.root.name}); every path is "
             f"relative to it. Put files here (e.g. index.html), not in a new {ws.root.name}/ subfolder.\n\n"
             f"{_audience(language, simple)}")
@@ -465,6 +531,7 @@ def build(llm, task, ws: Workspace, check="", max_steps=None, fix_rounds=3, lang
     for step in range(max_steps):
         report["steps"] = step + 1
         reply = _chat(llm, messages, budget, max_tokens, tools)
+        meter.add(reply)
         calls = reply.get("tool_calls") or []
         finished = None
         if not calls:
@@ -522,42 +589,11 @@ def build(llm, task, ws: Workspace, check="", max_steps=None, fix_rounds=3, lang
             continue
 
         report["summary"] = str(finished.get("summary") or "")
-        # The project's tests may only exist now (the AI wrote them), so look again.
-        # TaskMind's own detection comes before the AI's command: an AI command that finds no
-        # tests (seen live: unittest exit code 5) sends it off "fixing" code that works.
-        command = known_check or detect_check(ws.root) or str(finished.get("check_command") or "").strip()
-        web = webcheck.is_web_project(ws.root)
-        if command and command_risk(command)[0] != "ok":
-            report.update(status="unverified", check=command,
-                          check_output="TaskMind won't run this check by itself: " + command_risk(command)[1])
-            break
-        if not command and not web:
+        verdict, code, output = run_checks(ws, known_check, finished.get("check_command"), browser, event, report)
+        if verdict == "unverified":
             report["status"] = "unverified"
             break
-        code, output, checks = 0, "", []
-        if command:
-            checks.append(command)
-            event("check", command=command)
-            code, output = run_shell(command, ws.root, ws.timeout)
-            event("checked", command=command, code=code, output=output)
-        if code == 0 and web:
-            # A test can pass while the page is broken (seen live: a test that only checked the
-            # files exist), so web pages are also opened in a real browser.
-            event("check", command="open the page in a hidden browser")
-            result = webcheck.check(ws.root, browser=browser)
-            checks.append("browser check" if result["browser"] else "file links (no browser found)")
-            if result["problems"]:
-                code, output = 1, "TaskMind checked the page and found:\n- " + "\n- ".join(result["problems"])
-            elif not result["browser"]:
-                report["note"] = ("No Chrome, Chromium or Edge was found, so the page wasn't opened in a "
-                                  "browser; only its file links were checked.")
-                if not command:
-                    report.update(status="unverified", check=" + ".join(checks))
-                    break
-            event("checked", command=checks[-1], code=code, output=output)
-        report["check"] = " + ".join(checks)
-        report["check_output"] = output
-        if code == 0:
+        if verdict == "passed":
             report["status"] = "passed"
             break
         report["rounds"] += 1
@@ -567,6 +603,7 @@ def build(llm, task, ws: Workspace, check="", max_steps=None, fix_rounds=3, lang
         messages[-1]["content"] = (f"Not done: TaskMind ran `{report['check']}` and it failed (exit code {code}):\n"
                                    f"{output}\n\nFix the code (not the tests, unless they are wrong), "
                                    "run the tests, then call finish again.")
+    report["requests"], report["tokens"], report["mode"] = meter.requests, meter.tokens, "agent"
     report["changed"] = sorted(ws.changed)
     report["changed_tests"] = ws.changed_tests()
     if report["status"] == "unfinished" and ws.changed:

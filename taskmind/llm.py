@@ -84,6 +84,7 @@ class LLM:
             # Why the reply ended: "length" means it ran out of room (thinking models can
             # spend the whole allowance thinking and return nothing). Not sent back.
             message["_finish"] = data["choices"][0].get("finish_reason")
+            message["_usage"] = data.get("usage")  # {"prompt_tokens": ..., "completion_tokens": ...} when given
             return message
         except (KeyError, IndexError, TypeError) as exc:
             raise LLMError(f"Unexpected response from model: {str(data)[:300]}") from exc

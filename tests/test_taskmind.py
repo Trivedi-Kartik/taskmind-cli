@@ -3904,3 +3904,312 @@ class TestChatSession(TestCLI):
             with mock.patch.object(cli, "interactive", return_value=True):
                 cli.main([])
             self.assertIn("tm build", tty.getvalue())
+
+
+# Quick mode: TaskMind finds the code, the AI answers once with the edits
+
+def quick_reply(edits=None, files=None, summary="Done.", check=PASS_CHECK, **extra):
+    return json.dumps({"summary": summary, "edits": edits or [], "files": files or [], "check_command": check, **extra})
+
+
+FIX_ADD = {"path": "calc.py", "old": "a - b", "new": "a + b"}
+
+
+class UsageLLM(FakeLLM):
+    """FakeLLM that reports token usage, like a real provider."""
+
+    def chat(self, messages, **kw):
+        reply = super().chat(messages, **kw)
+        reply["_usage"] = {"prompt_tokens": 1000, "completion_tokens": 50}
+        return reply
+
+
+def roomy(llm):
+    llm.context_budget = 200_000  # a provider with room, so quick mode applies
+    return llm
+
+
+class TestQuickMode(unittest.TestCase):
+    def ws(self, tmp, files=None):
+        from taskmind.builder import Workspace
+        root = build_repo(Path(tmp) / "p")
+        if files:
+            write_files(root, files)
+        return Workspace(root)
+
+    def test_one_request_does_the_whole_change(self):
+        from taskmind import quick
+        llm = roomy(FakeLLM(quick_reply([FIX_ADD], summary="add() now adds.")))
+        events = []
+        with TempDir() as tmp:
+            ws = self.ws(tmp)
+            report = quick.build(llm, "Fix add", ws, on_event=lambda k, **i: events.append(k))
+            self.assertIn("a + b", (ws.root / "calc.py").read_text(encoding="utf-8"))
+        self.assertEqual((report["status"], report["mode"], report["requests"]), ("passed", "quick", 1))
+        self.assertEqual((report["changed"], report["summary"]), (["calc.py"], "add() now adds."))
+        goal = llm.calls[0]["messages"][1]["content"]
+        self.assertIn("The whole project (it's small)", goal)  # a small project is just shown in full
+        self.assertIn("--- calc.py ---\ndef add(a, b):\n    return a - b", goal)
+        self.assertIn("quick", events)
+        self.assertEqual(llm.calls[0]["json_mode"], True)
+
+    def test_a_bigger_project_gets_a_map_and_the_ai_can_ask_for_more_code(self):
+        from taskmind import quick
+        files = {"big.py": "# filler\n" * 4000, "pkg/other.py": "def helper_total(items):\n    return sum(items)\n"}
+        llm = roomy(FakeLLM(json.dumps({"need": ["helper_total", "search:return a", "calc.py:1-2", "nothing_here"]}),
+                            quick_reply([FIX_ADD])))
+        events = []
+        with TempDir() as tmp:
+            report = quick.build(llm, "Fix add", self.ws(tmp, files), on_event=lambda k, **i: events.append((k, i)))
+        self.assertEqual((report["status"], report["requests"]), ("passed", 2))
+        first = llm.calls[0]["messages"][1]["content"]
+        self.assertIn("Project map", first)
+        self.assertNotIn("The whole project", first)
+        answer = llm.calls[1]["messages"][-1]["content"]
+        self.assertIn("--- pkg/other.py: helper_total ---", answer)
+        self.assertIn("--- search return a ---\ncalc.py:2:", answer)
+        self.assertIn("--- calc.py:1-2 ---\n    1 def add(a, b):", answer)
+        self.assertIn("--- nothing_here ---\nNothing found for that.", answer)
+        self.assertIn(("quick_asked", {"need": ["helper_total", "search:return a", "calc.py:1-2", "nothing_here"]}), events)
+
+    def test_the_ai_can_ask_for_code_in_whatever_form_comes_naturally(self):
+        # Seen live: "taskmind/codeindex.py: Index.summary" found nothing, rounds were wasted, and it handed over.
+        from taskmind import quick
+        files = {"pkg/other.py": "class Index:\n    def summary(self):\n        return 1\n\n    def other(self):\n        pass\n",
+                 "web/site.css": ".footer-bottom { color: red; }\n", "web/page.html": "<footer id=\"foot\">x</footer>\n"}
+        with TempDir() as tmp:
+            ws = self.ws(tmp, files)
+            ws.repo.index  # built before use, as in a real run
+            for want in ("pkg/other.py: Index.summary", "pkg/other.py::Index.summary", "Index.summary in pkg/other.py",
+                         "Index.summary", "summary()", "`pkg/other.py Index.summary`"):
+                code, found = quick.resolve_needs(ws, [want])
+                self.assertTrue(found, want)
+                self.assertIn("--- pkg/other.py: Index.summary ---\n    2     def summary(self):", code, want)
+            code, found = quick.resolve_needs(ws, ["pkg/other.py:2", "web/site.css", "web/", "search:footer-bottom"])
+            self.assertTrue(found)
+            self.assertIn("--- pkg/other.py:1-32 ---\n    1 class Index:", code)  # one line: it and the lines around it
+            self.assertIn("--- web/site.css ---\n    1 .footer-bottom { color: red; }", code)
+            self.assertIn("--- files in web/ ---\nweb/page.html\nweb/site.css", code)
+            self.assertIn("web/site.css:1: .footer-bottom { color: red; }", code)
+            self.assertEqual(quick.resolve_needs(ws, ["no_such_thing_anywhere"]),
+                             ("--- no_such_thing_anywhere ---\nNothing found for that.", False))
+
+    def test_a_lookup_that_finds_nothing_is_explained_and_costs_no_round(self):
+        from taskmind import quick
+        llm = roomy(FakeLLM(json.dumps({"need": ["nothing_here_1"]}), json.dumps({"need": ["nothing_here_2"]}),
+                            *[json.dumps({"need": ["calc.py:1-2"]})] * 4, quick_reply([FIX_ADD])))
+        with TempDir() as tmp:
+            report = quick.build(llm, "Fix add", self.ws(tmp))
+        self.assertEqual((report["status"], report["mode"], report["requests"]), ("passed", "quick", 7))
+        self.assertIn("You can ask for: a function or class name", llm.calls[1]["messages"][-1]["content"])
+
+    def test_edits_that_do_not_apply_are_explained_and_asked_again_and_nothing_is_half_applied(self):
+        from taskmind import quick
+        llm = roomy(FakeLLM(quick_reply([{"path": "calc.py", "old": "a  -  b", "new": "a + b"},
+                                         {"path": "new.py", "old": "x", "new": "y"}]),
+                            quick_reply([FIX_ADD])))
+        with TempDir() as tmp:
+            ws = self.ws(tmp)
+            report = quick.build(llm, "Fix add", ws)
+        self.assertEqual((report["status"], report["requests"]), ("passed", 2))
+        feedback = llm.calls[1]["messages"][-1]["content"]
+        self.assertIn("None of your edits were applied", feedback)
+        self.assertIn("`old` isn't in the file exactly as written", feedback)
+        self.assertIn("    2     return a - b", feedback)       # the closest real text, with line numbers
+        self.assertIn("new.py: it doesn't exist; put a new file in `files`", feedback)
+        self.assertEqual(report["changed"], ["calc.py"])  # the first, bad attempt wrote nothing at all
+
+    def test_big_files_can_be_edited_and_a_failed_write_is_rolled_back(self):
+        # Seen live: editing a 99,000-character file failed on the 60,000-character limit for new writes, after
+        # another file had already been changed, so the AI's next edits no longer matched.
+        from taskmind import quick
+        with TempDir() as tmp:
+            ws = self.ws(tmp, {"big.py": "# filler\n" * 10_000 + "TARGET = 1\n", "sub": "i am a file, not a folder"})
+            big = (ws.root / "big.py")
+            written, problems = quick.apply_changes(ws, [{"path": "big.py", "old": "TARGET = 1", "new": "TARGET = 2"}], [])
+            self.assertEqual((written, problems), (["big.py"], []))  # 90,000+ characters: fine for an edit
+            self.assertIn("TARGET = 2", big.read_text(encoding="utf-8"))
+            before = (ws.root / "calc.py").read_text(encoding="utf-8")
+            written, problems = quick.apply_changes(
+                ws, [FIX_ADD], [{"path": "sub/new.py", "content": "x = 1\n"}])  # `sub` is a file: this write fails
+            self.assertEqual(written, [])
+            self.assertIn("nothing was changed", problems[0])
+            self.assertEqual((ws.root / "calc.py").read_text(encoding="utf-8"), before)  # calc.py was put back
+            self.assertNotIn("calc.py", ws.changed)
+
+    def test_a_long_existing_file_is_never_rewritten_from_scratch(self):
+        from taskmind import quick
+        with TempDir() as tmp:
+            ws = self.ws(tmp, {"long.py": "x = 1\n" * 200})
+            written, problems = quick.apply_changes(ws, [], [{"path": "long.py", "content": "x = 2\n"}])
+        self.assertEqual(written, [])
+        self.assertIn("it already exists and is long: change it with `edits`", problems[0])
+
+    def test_failing_checks_go_back_with_the_error_and_the_current_code(self):
+        from taskmind import quick
+        llm = roomy(FakeLLM(quick_reply([{"path": "calc.py", "old": "a - b", "new": "a * b"}]),
+                            quick_reply([{"path": "calc.py", "old": "a * b", "new": "a + b"}])))
+        with TempDir() as tmp:
+            report = quick.build(llm, "Fix add", self.ws(tmp))
+        self.assertEqual((report["status"], report["requests"], report["rounds"]), ("passed", 2, 1))
+        feedback = llm.calls[1]["messages"][-1]["content"]
+        self.assertIn("It failed (exit code 1)", feedback)
+        self.assertIn("AssertionError", feedback)
+        self.assertIn("--- calc.py (as it is now) ---\n    1 def add(a, b):\n    2     return a * b", feedback)
+
+    def test_a_task_that_is_too_big_is_handed_to_the_step_by_step_agent(self):
+        from taskmind import quick
+        llm = roomy(FakeLLM(json.dumps({"too_big": True}),
+                            tool_call("edit_file", path="calc.py", old="a - b", new="a + b"),
+                            tool_call("finish", summary="Fixed.", check_command=PASS_CHECK)))
+        events = []
+        with TempDir() as tmp:
+            report = quick.build(llm, "Fix add", self.ws(tmp), on_event=lambda k, **i: events.append((k, i)))
+        self.assertEqual((report["status"], report["mode"], report["requests"]), ("passed", "agent", 3))
+        self.assertIn("step-by-step exploration", report["escalated"])
+        self.assertIn(("escalate", {"reason": report["escalated"]}), events)
+
+    def test_answers_that_are_not_json_hand_over_after_one_reminder(self):
+        from taskmind import quick
+        llm = roomy(FakeLLM("sure, I will edit calc.py", "I did it!", tool_call("edit_file", path="calc.py", old="a - b", new="a + b"),
+                            tool_call("finish", summary="Fixed.", check_command=PASS_CHECK)))
+        with TempDir() as tmp:
+            report = quick.build(llm, "Fix add", self.ws(tmp))
+        self.assertEqual((report["status"], report["mode"]), ("passed", "agent"))
+        self.assertIn("expected format", report["escalated"])
+        self.assertIn("Reply with ONLY the JSON object", llm.calls[1]["messages"][-1]["content"])
+
+    def test_checks_that_keep_failing_hand_over_with_what_was_tried(self):
+        from taskmind import quick
+        llm = roomy(FakeLLM(quick_reply([{"path": "calc.py", "old": "a - b", "new": "a * b"}]),
+                            quick_reply([{"path": "calc.py", "old": "a * b", "new": "a % b"}]),
+                            quick_reply([{"path": "calc.py", "old": "a % b", "new": "a // b"}]),
+                            tool_call("edit_file", path="calc.py", old="a // b", new="a + b"),
+                            tool_call("finish", summary="Fixed.", check_command=PASS_CHECK)))
+        with TempDir() as tmp:
+            report = quick.build(llm, "Fix add", self.ws(tmp))
+        self.assertEqual((report["status"], report["mode"], report["requests"]), ("passed", "agent", 5))
+        self.assertIn("checks still fail after quick fixes", report["escalated"])
+        agent_goal = llm.calls[3]["messages"][1]["content"]
+        self.assertIn("A faster first attempt at this task was made before you", agent_goal)
+        self.assertIn("Quick attempt: changed calc.py", agent_goal)
+        self.assertIn("AssertionError", agent_goal)
+
+    def test_new_files_tests_and_messy_paths(self):
+        from taskmind import quick
+        test = "import unittest, calc\n\nclass T(unittest.TestCase):\n    def test_add(self):\n        self.assertEqual(calc.add(2, 3), 5)\n"
+        llm = roomy(FakeLLM(quick_reply([{"path": "./calc.py", "old": "a - b", "new": "a + b"}],
+                                        [{"path": ".\\test_calc.py", "content": test}], check="")))
+        with TempDir() as tmp:
+            ws = self.ws(tmp)
+            report = quick.build(llm, "Fix add and test it", ws)
+            self.assertTrue((ws.root / "test_calc.py").exists())
+        self.assertEqual((report["status"], report["changed"]), ("passed", ["calc.py", "test_calc.py"]))
+        self.assertIn("unittest", report["check"])  # the project's own tests, found after they were written
+
+    def test_secrets_other_folders_and_git_are_off_limits(self):
+        from taskmind import quick
+        with TempDir() as tmp:
+            ws = self.ws(tmp)
+            (ws.root / ".env").write_text("KEY=1\n", encoding="utf-8")
+            written, problems = quick.apply_changes(
+                ws, [{"path": ".env", "old": "KEY=1", "new": "KEY=2"}],
+                [{"path": "../evil.py", "content": "x"}, {"path": ".git/config", "content": "x"},
+                 {"path": "keys/id_rsa", "content": "x"}])
+            self.assertEqual(written, [])
+            self.assertEqual(len(problems), 4)
+            self.assertEqual((ws.root / ".env").read_text(encoding="utf-8"), "KEY=1\n")
+            self.assertFalse((ws.root.parent / "evil.py").exists())
+
+    def test_tiny_free_tiers_and_empty_projects_skip_quick_mode(self):
+        from taskmind import quick
+        small = FakeLLM(tool_call("finish", summary="Looked.", check_command=f"{PY} -c \"pass\""))
+        small.context_budget = 9000  # Groq-sized: can't hold the code
+        events = []
+        with TempDir() as tmp:
+            report = quick.build(small, "Look", self.ws(tmp), on_event=lambda k, **i: events.append(k))
+        self.assertEqual(report["mode"], "agent")
+        self.assertNotIn("quick", events)
+        with TempDir() as tmp, mock.patch.dict(os.environ, {"TASKMIND_INDEX": "off"}):
+            report = quick.build(roomy(FakeLLM(tool_call("finish", summary="Looked.", check_command=f"{PY} -c \"pass\""))),
+                                 "Look", self.ws(tmp))
+        self.assertEqual(report["mode"], "agent")  # without the index quick mode has nothing to find code with
+        with TempDir() as tmp:
+            from taskmind.builder import Workspace
+            empty = Path(tmp) / "empty"
+            empty.mkdir()
+            report = quick.build(roomy(FakeLLM(tool_call("write_file", path="a.py", content="x = 1\n"),
+                                               tool_call("finish", summary="Made.", check_command=f"{PY} -c \"pass\""))),
+                                 "A script", Workspace(empty))
+        self.assertEqual(report["mode"], "agent")  # a new project is written file by file
+
+    def test_quick_mode_can_be_switched_off(self):
+        from taskmind import quick
+        llm = roomy(FakeLLM(tool_call("edit_file", path="calc.py", old="a - b", new="a + b"),
+                            tool_call("finish", summary="Fixed.", check_command=PASS_CHECK)))
+        with TempDir() as tmp, mock.patch.dict(os.environ, {"TASKMIND_QUICK": "off"}):
+            report = quick.build(llm, "Fix add", self.ws(tmp))
+        self.assertEqual((report["status"], report["mode"]), ("passed", "agent"))
+
+    def test_requests_and_tokens_are_counted_in_both_modes(self):
+        from taskmind import quick
+        with TempDir() as tmp:
+            quick_report = quick.build(roomy(UsageLLM(quick_reply([FIX_ADD]))), "Fix add", self.ws(tmp))
+        self.assertEqual((quick_report["requests"], quick_report["tokens"]), (1, 1050))
+        with TempDir() as tmp:
+            from taskmind.builder import build
+            agent_report = build(UsageLLM(tool_call("edit_file", path="calc.py", old="a - b", new="a + b"),
+                                          tool_call("finish", summary="Done.", check_command=PASS_CHECK)),
+                                 "Fix add", self.ws(tmp))
+        self.assertEqual((agent_report["requests"], agent_report["tokens"], agent_report["mode"]), (2, 2100, "agent"))
+
+    def test_follow_ups_carry_the_history(self):
+        from taskmind import quick
+        llm = roomy(FakeLLM(quick_reply([FIX_ADD])))
+        with TempDir() as tmp:
+            quick.build(llm, "also make it work", self.ws(tmp), earlier="Round 1. The user asked: add numbers")
+        self.assertIn("Earlier work in this project (it's in the code now):\nRound 1. The user asked: add numbers",
+                      llm.calls[0]["messages"][1]["content"])
+
+
+class TestQuickModeCLI(TestCLI):
+    def setUp(self):
+        super().setUp()
+        self.cwd = os.getcwd()
+        self.root = build_repo(Path(self.tmp.name) / "quickproj")
+        os.chdir(self.root)
+
+    def tearDown(self):
+        os.chdir(self.cwd)
+        super().tearDown()
+
+    def test_tm_build_is_quick_by_default_and_says_what_it_used(self):
+        llm = roomy(UsageLLM(quick_reply([FIX_ADD], summary="add() now adds.")))
+        code, out = self.run_cli("build", "Fix the add function", "--yes", llm=llm)
+        self.assertEqual(code, 0, out)
+        self.assertIn("Quick mode", out)
+        self.assertIn("1 AI request, about 1k tokens", out)
+        self.assertIn("Done and checked", out)
+        self.assertIn("a + b", (self.root / "calc.py").read_text(encoding="utf-8"))
+
+    def test_agent_flag_and_new_projects_use_the_step_by_step_mode(self):
+        steps = [tool_call("edit_file", path="calc.py", old="a - b", new="a + b"),
+                 tool_call("finish", summary="Fixed.", check_command=PASS_CHECK)]
+        code, out = self.run_cli("build", "Fix add", "--agent", "--yes", llm=roomy(FakeLLM(*steps)))
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("Quick mode: I find", out)
+        self.assertIn("Step-by-step mode: 2 AI requests", out)
+
+    def test_a_handover_is_shown(self):
+        llm = roomy(FakeLLM(json.dumps({"too_big": True}), tool_call("edit_file", path="calc.py", old="a - b", new="a + b"),
+                            tool_call("finish", summary="Fixed.", check_command=PASS_CHECK)))
+        code, out = self.run_cli("build", "Fix add", "--yes", llm=llm)
+        self.assertIn("Switching to step-by-step mode", out)
+        self.assertIn("Done and checked", out)
+
+    def test_the_session_uses_quick_mode_too(self):
+        llm = roomy(FakeLLM(quick_reply([FIX_ADD])))
+        with mock.patch.object(cli, "interactive", return_value=True), mock.patch.object(cli, "ensure_code_consent"):
+            code, out = self.run_cli("chat", llm=llm, stdin="fix the add function\n/exit\n")
+        self.assertIn("Quick mode", out)
+        self.assertIn("/undo takes it back", out)
