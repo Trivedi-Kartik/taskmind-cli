@@ -1127,6 +1127,48 @@ def _new_project(name):
     return str(folder)
 
 
+def cmd_init(args):
+    """Study the project and write TASKMIND.md: notes every build reads first."""
+    from taskmind import builder, project
+    from taskmind.repo_tools import Repo
+    root = Path(os.getcwd())
+    if not any(root.iterdir()):
+        raise CLIError("This folder is empty, so there's nothing to study yet. Build something first: "
+                       "tm build \"...\"")
+    target = root / "TASKMIND.md"
+    existing = [name for name, _ in project.project_notes(root)]
+    if target.exists() and not args.yes and not (
+            interactive() and ui.confirm("TASKMIND.md already exists. Study the project again and replace it?")):
+        ui.out("Kept the current TASKMIND.md. Edit it any time; every build reads it.")
+        return 0
+    if existing and existing != ["TASKMIND.md"]:
+        others = ", ".join(n for n in existing if n != "TASKMIND.md")
+        ui.out(f"[dim]TaskMind already reads {ui.escape(others)} here; TASKMIND.md will add to it.[/dim]")
+    repo = Repo(root)
+    cfg = ensure_setup()
+    cands = routing.candidates(cfg, "analyze")
+    ensure_code_consent(repo, "analyze", cands)
+    ui.out(f"📘 Studying {ui.escape(repo.root.name)} to write its project notes...")
+
+    def on_step(name, step_args):
+        detail = step_args.get("pattern") or step_args.get("path") or ""
+        ui.out(f"  [dim]→ {name.replace('_', ' ')} {ui.escape(str(detail))}[/dim]")
+
+    notes = AI("analyze", cands=cands).run(lambda llm: project.write_notes(
+        llm, repo, builder.detect_check(root), on_step=on_step))
+    target.write_text(notes, encoding="utf-8")
+    ui.out("")
+    ui.plain(notes)
+    ui.out("[green]Wrote TASKMIND.md.[/green] Read it and fix anything wrong or missing: every `tm build` here "
+           "reads it first, so it's worth getting right. Add your own rules too (e.g. \"always use TypeScript\").")
+    if builder.is_project(root) and (args.yes or (interactive() and ui.confirm(
+            "Save it in git, so your team and future builds share it?", default=True))):
+        builder.git(root, "add", "TASKMIND.md")
+        builder._commit(root, "-m", "Add TASKMIND.md: project notes for TaskMind", "--", "TASKMIND.md")
+        ui.out("[dim]Saved in git.[/dim]")
+    return 0
+
+
 def _undo_build(args):
     from taskmind import builder
     root = os.getcwd()
@@ -1191,9 +1233,15 @@ def _offer_new_folder(root, text, yes):
     return str(Path(root) / (chosen or name))
 
 
-def _show_build_event(kind, name=None, args=None, result=None, command=None, code=None, output=None):
+def _show_build_event(kind, name=None, args=None, result=None, command=None, code=None, output=None,
+                      notes=None, attached=None):
     args = args or {}
-    if kind == "tool":
+    if kind == "context":
+        if notes:
+            ui.out(f"  📘 Project notes: {ui.escape(', '.join(notes))}")
+        if attached:
+            ui.out(f"  📎 Starting from: {ui.escape(', '.join(attached))}")
+    elif kind == "tool":
         if name == "run_command":
             ui.out(f"  ▶ [cyan]{ui.escape(str(args.get('command', ''))[:120])}[/cyan]")
         elif name in ("write_file", "edit_file"):
@@ -1244,6 +1292,14 @@ def cmd_build(args):
         root = _new_project(args.new)
     elif builder.is_project(root):
         _make_room_for_build(root)
+    from taskmind import project
+    missing = project.missing_mentions(root, text)
+    if missing:
+        names = ", ".join(f"@{m}" for m in missing)
+        if not interactive() or args.yes:
+            ui.out(f"[yellow]Not found in this project, so not attached: {ui.escape(names)}[/yellow]")
+        elif not ui.confirm(f"{ui.escape(names)} isn't in this project (a typo?). Build anyway?", default=False):
+            return 1
     try:
         base, branch = builder.start_branch(root, title, new_project=bool(args.new))
     except builder.GitError as exc:
@@ -1683,6 +1739,9 @@ def build_parser():
     sp.add_argument("--tool", choices=list(TOOLS), default="claude")
     sp.add_argument("-y", "--yes", action="store_true")
 
+    sp = add("init", cmd_init, "Study this project and write TASKMIND.md: notes every build reads first")
+    sp.add_argument("-y", "--yes", action="store_true", help="Replace an existing TASKMIND.md and save it in "
+                                                             "git without asking")
     sp = add("build", cmd_build, "Build it: the AI writes the code, runs the tests, fixes them and saves the "
                                  "work on a safe branch")
     sp.add_argument("task", nargs="*", help='What to build, in your own words, or a task number')

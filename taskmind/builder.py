@@ -24,7 +24,7 @@ from taskmind.agent import TRIMMED
 from taskmind.llm import LLMError, RequestTooLarge, ToolCallError
 from taskmind.repo_tools import TOOL_SPECS as READ_TOOLS
 from taskmind.repo_tools import Repo, dispatch
-from taskmind import webcheck
+from taskmind import project, webcheck
 from taskmind.secrets import is_secret_file, redact
 
 MAX_OUTPUT = 2500
@@ -309,7 +309,8 @@ If the request is short or vague, first decide what a real, complete version inc
 markup, and the polish asked for, such as modern animations).
 
 How to work:
-1. Look first: list_files, then read what the task touches. Follow the project's existing style.
+1. Look first: start from the project notes and any files the user pointed at (given with the task), \
+then list and read what else the task touches. Follow the project's existing style and its notes.
 2. Make the change with write_file (new or small files) or edit_file (changes to big files).
 3. Add or update automated tests for the new behaviour, using the project's test setup \
 (none? use the language's built-in one, e.g. Python unittest, with no installs).
@@ -430,6 +431,16 @@ def build(llm, task, ws: Workspace, check="", max_steps=40, fix_rounds=3, langua
             f"{_audience(language, simple)}")
     if known_check:
         goal += f"\n\nThe project's tests run with: {known_check}. They must pass when you finish."
+    # What the project's people already wrote down for AI tools, and the files the request
+    # points at with @: given up front, so the AI starts informed instead of rediscovering.
+    notes = project.project_notes(ws.root, limit=min(12_000, budget // 4))
+    if notes:
+        goal += "\n\nProject notes (follow them; they come from the project's own files):\n\n" + "\n\n".join(
+            f"--- {name} ---\n{text}" for name, text in notes)
+    attached_text, attached = project.attachments(ws.repo, task, limit=budget // 3)
+    if attached_text:
+        goal += "\n\nFiles and folders the user pointed at (start from these):\n\n" + attached_text
+    event("context", notes=[name for name, _ in notes], attached=attached)
     messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": goal}]
     report = {"status": "unfinished", "summary": "", "check": known_check, "check_output": "", "steps": 0,
               "rounds": 0}

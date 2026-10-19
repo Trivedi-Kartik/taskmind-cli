@@ -1,0 +1,139 @@
+"""What TaskMind knows about a project before it starts work on it.
+
+Two sources, both put in front of the AI at the start of every build:
+  - Project notes: files developers already keep for AI tools (CLAUDE.md, AGENTS.md,
+    .cursorrules, Copilot instructions) and TaskMind's own TASKMIND.md (`tm init` writes one).
+    A team already using Claude Code or Cursor gets TaskMind working with no setup.
+  - Mentions: `@src/app.py` or `@src/forms/` in a request attaches that file, or a folder's
+    file list, so the AI starts from exactly what the person pointed at.
+
+Secret files are never read, and secret-looking values are blanked, as everywhere else.
+"""
+
+import re
+from pathlib import Path
+
+from taskmind.repo_tools import Repo
+from taskmind.secrets import is_secret_file, redact
+
+NOTE_FILES = ["TASKMIND.md", "CLAUDE.md", "AGENTS.md", ".cursorrules", ".github/copilot-instructions.md"]
+
+# "@src/app.py" but not "name@example.com": the @ must start a word.
+_MENTION = re.compile(r"(?<![\w@])@([\w.\-/]+[\w/])")
+
+
+def project_notes(root, limit=12_000) -> list:
+    """[(file name, text)] for the project's instruction files, within `limit` characters in all."""
+    root = Path(root)
+    notes, used = [], 0
+    for name in NOTE_FILES:
+        path = root / name
+        if not path.is_file():
+            continue
+        try:
+            text = redact(path.read_text(encoding="utf-8", errors="replace")).strip()
+        except OSError:
+            continue
+        if not text or used >= limit:
+            continue
+        if used + len(text) > limit:
+            text = text[: limit - used] + "\n... (cut to fit)"
+        notes.append((name, text))
+        used += len(text)
+    return notes
+
+
+def mentions(text) -> list:
+    """The paths a request points at with @, in order, without repeats."""
+    return list(dict.fromkeys(m.rstrip(".") for m in _MENTION.findall(text or "")))
+
+
+def missing_mentions(root, text) -> list:
+    """Mentioned paths that don't exist in the project (typos are worth catching before a build)."""
+    root = Path(root)
+    return [m for m in mentions(text) if not (root / m).exists()]
+
+
+def attachments(repo: Repo, text, limit=24_000) -> tuple:
+    """(text to give the AI, [paths attached]) for the request's @mentions, within `limit` characters."""
+    parts, attached, used = [], [], 0
+    for rel in mentions(text):
+        path = repo.root / rel
+        if not path.exists():
+            continue
+        try:
+            repo._safe(rel)
+        except ValueError:
+            continue  # outside the project
+        if path.is_dir():
+            body = repo.tree(rel, max_entries=200)
+            title = f"Folder {rel}/ (its files; read the ones you need)"
+        elif is_secret_file(rel):
+            parts.append(f"### {rel}\n(a secrets file: TaskMind never reads it)")
+            continue
+        else:
+            try:
+                body = redact(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError):
+                continue  # binary or unreadable
+            title = f"File {rel}"
+        room = limit - used
+        if room <= 200:
+            parts.append(f"### {rel}\n(not attached: no room left; read it with read_file)")
+            continue
+        if len(body) > room:
+            body = body[:room] + "\n... (cut to fit; read the rest with read_file)"
+        parts.append(f"### {title}\n{body}")
+        attached.append(rel)
+        used += len(body)
+    return "\n\n".join(parts), attached
+
+
+INIT_GOAL = """Study this project so that an AI engineer can work on it well later, then write its \
+project notes: TASKMIND.md, read at the start of every TaskMind build.
+
+Explore with your tools: the folder structure, README, package/build files (package.json, \
+pyproject.toml, requirements.txt, go.mod, Cargo.toml ...), the main entry points, and a test.
+
+Write short, factual Markdown (under 60 lines) with these sections:
+# <project name>
+One or two sentences: what it is and who it's for.
+## Stack
+Languages, frameworks, main libraries, with versions when the files say.
+## Layout
+The important folders and files, one line each.
+## Run and test
+Exact commands to install, run and test it (only ones you found evidence for).
+## Conventions
+Style and patterns the code follows (naming, structure, error handling, how tests are written).
+## Watch out
+Anything easy to break or get wrong.
+
+Only state what you saw in the files; write "unknown" rather than guess. No secrets.
+Final answer: only this JSON: {"notes": "<the Markdown>"}"""
+
+INIT_HINT = ("Use your tools first: list the files, then read the README, the package files and one or two "
+             "core files. Be economical with tool calls.")
+
+
+def write_notes(llm, repo: Repo, known_check="", on_step=None) -> str:
+    """Ask the AI to study the project and return TASKMIND.md's text."""
+    from taskmind.agent import run_tool_agent
+    from taskmind.llm import extract_object
+
+    goal = INIT_GOAL
+    if known_check:
+        goal += f"\n\nTaskMind found this test command: {known_check}"
+
+    def parses(text):
+        try:
+            return bool(str(extract_object(text).get("notes") or "").strip())
+        except ValueError:
+            return False
+
+    text = run_tool_agent(llm, "You are a senior engineer documenting a codebase for a colleague.", goal, repo,
+                          INIT_HINT, max_steps=12, on_step=on_step, accept=parses)
+    notes = str(extract_object(text).get("notes") or "").strip()
+    if not notes:
+        raise ValueError("The AI didn't write any notes. Try again.")
+    return redact(notes) + "\n"

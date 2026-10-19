@@ -30,6 +30,33 @@ What's measured from now on is **whether real tasks get done**, graded by checks
       open-source projects; the same tasks run with Claude Code for comparison
 - [ ] Faster on free tiers: send less per step, and reuse what was read
 
+## Step 1b: working in real projects (agreed 2026-10-19)
+
+- [x] **1. Project notes:** builds read TASKMIND.md, CLAUDE.md, AGENTS.md, .cursorrules,
+      Copilot instructions; `tm init` writes TASKMIND.md
+- [x] **2. @mentions:** `tm build "... @src/app.ts ..."` starts from those files; typos caught
+- [ ] **3. Follow-ups:** `tm build --more "make it bigger"` continues the last build (same
+      branch, remembers what it did); later `tm chat`, a back-and-forth session where every
+      change is still tested and undoable. Also resume a build interrupted by Ctrl+C or limits
+- [ ] **4. Big projects:** a saved index of the codebase (files, symbols, what imports what),
+      refreshed on change, so the AI finds things in one step instead of ten
+
+**Next ideas, found while testing (after 4):**
+
+- [ ] **Honest summaries:** compare what the AI *says* it changed with what it *did* (seen live:
+      "updated script.js" when only test.html changed) and correct the summary
+- [ ] **See the changes before keeping:** a `d` answer at "Keep it?" shows the diff, file by file
+- [ ] **A second AI reviews every build** before "Keep it?" (the independent review `tm verify`
+      already does, applied to the diff), catching what tests miss
+- [ ] **What it cost:** requests, tokens and time per build, and how much of today's free quota is left
+- [ ] **Undo also resets the task** (seen: undone builds stay "in progress" in `tm list`)
+- [ ] **Pictures as input:** "make it look like this screenshot"
+- [ ] **See it running:** a local preview link for web builds; for non-coders, publish to a free
+      host (e.g. GitHub Pages) and get a link to share
+- [ ] **Overnight queue:** `tm build --all` works through the task list, each on its own branch,
+      with a morning report
+- [ ] **Knowing who uses it:** opt-in, anonymous usage counts (nothing about code or tasks)
+
 ## Step 2: real users (the next 4 weeks)
 
 - [ ] 5 developers from different small teams use `tm build` on real work for a week. Measure:

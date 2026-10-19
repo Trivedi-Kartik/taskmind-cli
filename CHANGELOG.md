@@ -2,6 +2,16 @@
 
 Update with `tm update`. Your tasks, settings and keys are kept.
 
+## 0.5.0 (2026-10-19)
+
+- **Project notes:** every build first reads `TASKMIND.md`, `CLAUDE.md`, `AGENTS.md`,
+  `.cursorrules` and Copilot instructions, so projects set up for Claude Code, Codex or Cursor
+  work with TaskMind straight away.
+- **`tm init`** studies a project and writes `TASKMIND.md` (stack, layout, how to run and test,
+  conventions) for you to check and share in git.
+- **Point at files with @:** `tm build "add the checks from @src/login.ts to @src/signup.ts"`
+  starts the AI from exactly those files. Typos are caught before the build starts.
+
 ## 0.4.0 (2026-10-17)
 
 - **Web pages are checked in a real browser.** After a build, TaskMind opens the page in a

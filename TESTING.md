@@ -229,7 +229,7 @@ git add . && git commit -qm "Notes app" && echo ready
 
 | ID | Steps | Expect |
 |---|---|---|
-| P1 | `python3 scripts/build.py`, then `python3 dist/taskmind.pyz --version` and `python3 dist/taskmind.pyz help reminders` | taskmind 0.4.0, and the help works from the single file |
+| P1 | `python3 scripts/build.py`, then `python3 dist/taskmind.pyz --version` and `python3 dist/taskmind.pyz help reminders` | taskmind 0.5.0, and the help works from the single file |
 | P2 (optional) | If you have pipx: `pipx install /home/user/kartik/folder` then `tm --version` in a new terminal | The `tm` command works from anywhere |
 | P3 | In a new project folder (any `git init` folder with a file), `tm add "x"` then `tm go <id>` | First it asks "Allow this for this project?", naming your AI provider; answer **n**: "nothing was sent". Run again and answer y: it doesn't ask a third time |
 | P4 | `tm report-bug "testing the report"` | A saved report file; open it: version, system, provider name, recent errors, and **no API key** |
@@ -260,6 +260,16 @@ git add -A && git commit -qm "start"
 | Q11 | Edit a file without committing, then `tm build "anything"` | It lists your change and offers to save it for you; answer y and the build goes ahead |
 | Q12 | `cd ~/tm-tests && tm build --new page-test "a one-page site with a button that counts clicks"` | The output shows "open the page in a hidden browser" and "Checked by TaskMind: ... browser check" |
 | Q8 | Try it on a real project of yours, with a small real task | Honest question: did you keep the result? How long did it take? Was anything wrong? (This is the most useful feedback of all) |
+
+## S. Existing projects: notes and @mentions
+
+| ID | Steps | Expect |
+|---|---|---|
+| S1 | In ~/tm-tests/coffice-cafe: `tm init` | It lists what it reads (→ lines), prints the notes (stack, layout, run and test, conventions), and offers to save TASKMIND.md in git. Check: is every fact right? |
+| S2 | Add a line of your own to TASKMIND.md (e.g. "All prices are in rupees with the ₹ sign"), commit it, then `tm build "..."` | The build shows "📘 Project notes: TASKMIND.md", and the result follows your rule |
+| S3 | `tm build "make the buttons in @styles.css rounder"` | "📎 Starting from: styles.css" before any 🔍 lines |
+| S4 | `tm build "fix @stlyes.css"` (typo) | "isn't in this project (a typo?). Build anyway?" before anything runs |
+| S5 | In a project with a CLAUDE.md or AGENTS.md (from Claude Code or Codex), `tm build "..."` | "📘 Project notes: CLAUDE.md": TaskMind follows the same rules |
 
 ## R. Updates
 

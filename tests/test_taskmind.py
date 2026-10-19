@@ -2931,3 +2931,104 @@ class TestUpdates(TestCLI):
         from taskmind import __version__
         changelog = (Path(__file__).resolve().parent.parent / "CHANGELOG.md").read_text(encoding="utf-8")
         self.assertIn(f"## {__version__} ", changelog)  # every release says what's new
+
+
+# Project notes (CLAUDE.md, AGENTS.md, TASKMIND.md ...) and @mentions
+
+class TestProjectContext(unittest.TestCase):
+    def test_reads_the_notes_developers_already_keep(self):
+        from taskmind import project
+        with TempDir() as tmp:
+            root = Path(tmp)
+            (root / "CLAUDE.md").write_text("Use TypeScript strict.\nAPI_KEY=" + "sk-" + "a" * 30 + "\n",
+                                            encoding="utf-8")
+            (root / ".github").mkdir()
+            (root / ".github" / "copilot-instructions.md").write_text("Tests use vitest.", encoding="utf-8")
+            notes = dict(project.project_notes(root))
+        self.assertEqual(list(notes), ["CLAUDE.md", ".github/copilot-instructions.md"])
+        self.assertIn("TypeScript strict", notes["CLAUDE.md"])
+        self.assertNotIn("sk-aaaa", notes["CLAUDE.md"])  # secrets blanked, as everywhere
+
+    def test_notes_fit_the_budget(self):
+        from taskmind import project
+        with TempDir() as tmp:
+            (Path(tmp) / "AGENTS.md").write_text("x" * 5000, encoding="utf-8")
+            (Path(tmp) / "TASKMIND.md").write_text("y" * 5000, encoding="utf-8")
+            notes = project.project_notes(tmp, limit=6000)
+        self.assertEqual([n for n, _ in notes], ["TASKMIND.md", "AGENTS.md"])  # TaskMind's own first
+        self.assertLessEqual(sum(len(t) for _, t in notes), 6100)
+
+    def test_mentions_not_emails(self):
+        from taskmind import project
+        text = "Add checks to @src/forms/signup.ts like @src/forms/login.ts, see @docs/. Mail me@example.com."
+        self.assertEqual(project.mentions(text), ["src/forms/signup.ts", "src/forms/login.ts", "docs/"])
+
+    def test_attachments_files_folders_and_secrets(self):
+        from taskmind import project
+        with TempDir() as tmp:
+            repo = Repo(build_repo(Path(tmp) / "p"))
+            (repo.root / "lib").mkdir()
+            (repo.root / "lib" / "util.py").write_text("def helper(): pass\n", encoding="utf-8")
+            (repo.root / ".env").write_text("KEY=1\n", encoding="utf-8")
+            text, attached = project.attachments(repo, "Use @calc.py and @lib/ but not @.env or @nope.py")
+            self.assertEqual(project.missing_mentions(repo.root, "fix @nope.py and @calc.py"), ["nope.py"])
+        self.assertEqual(attached, ["calc.py", "lib/"])
+        self.assertIn("return a - b", text)
+        self.assertIn("util.py", text)
+        self.assertIn("TaskMind never reads it", text)
+        self.assertNotIn("KEY=1", text)
+
+    def test_a_build_starts_from_notes_and_mentioned_files(self):
+        from taskmind.builder import Workspace, build
+        llm = FakeLLM(tool_call("finish", summary="Done.", check_command=PASS_CHECK))
+        events = []
+        with TempDir() as tmp:
+            root = build_repo(Path(tmp) / "p")
+            (root / "AGENTS.md").write_text("Always add type hints.", encoding="utf-8")
+            build(llm, "Make @calc.py add instead of subtract", Workspace(root), fix_rounds=0,
+                  on_event=lambda kind, **i: events.append((kind, i)))
+        goal = llm.calls[0]["messages"][1]["content"]
+        self.assertIn("Always add type hints", goal)
+        self.assertIn("return a - b", goal)  # the mentioned file, up front
+        self.assertIn(("context", {"notes": ["AGENTS.md"], "attached": ["calc.py"]}), events)
+
+
+class TestInitAndMentionsCLI(TestCLI):
+    def setUp(self):
+        super().setUp()
+        self.cwd = os.getcwd()
+        self.root = build_repo(Path(self.tmp.name) / "initproj")
+        os.chdir(self.root)
+
+    def tearDown(self):
+        os.chdir(self.cwd)
+        super().tearDown()
+
+    def test_init_writes_and_saves_project_notes(self):
+        llm = FakeLLM(tool_call("read_file", path="calc.py"),
+                      json.dumps({"notes": "# initproj\nA calculator.\n## Run and test\nunknown"}))
+        code, out = self.run_cli("init", "--yes", llm=llm)
+        self.assertEqual(code, 0, out)
+        self.assertIn("A calculator.", (self.root / "TASKMIND.md").read_text(encoding="utf-8"))
+        log = subprocess.run(["git", "log", "--format=%s"], cwd=self.root, capture_output=True, text=True).stdout
+        self.assertIn("Add TASKMIND.md", log)
+        code, out = self.run_cli("init", llm=FakeLLM())  # already there, nobody to ask: keep it
+        self.assertIn("Kept the current TASKMIND.md", out)
+
+    def test_build_says_what_context_it_used(self):
+        (self.root / "CLAUDE.md").write_text("Keep functions tiny.", encoding="utf-8")
+        subprocess.run(["git", "add", "-A"], cwd=self.root, check=True)
+        git(self.root, "commit", "-qm", "notes")
+        llm = FakeLLM(tool_call("edit_file", path="calc.py", old="a - b", new="a + b"),
+                      tool_call("finish", summary="Done.", check_command=PASS_CHECK))
+        code, out = self.run_cli("build", "Fix @calc.py", "--yes", llm=llm)
+        self.assertEqual(code, 0, out)
+        self.assertIn("📘 Project notes: CLAUDE.md", out)
+        self.assertIn("📎 Starting from: calc.py", out)
+
+    def test_typo_in_a_mention_is_flagged(self):
+        llm = FakeLLM(tool_call("edit_file", path="calc.py", old="a - b", new="a + b"),
+                      tool_call("finish", summary="Done.", check_command=PASS_CHECK))
+        code, out = self.run_cli("build", "Fix @calcc.py", "--yes", llm=llm)
+        self.assertIn("Not found in this project, so not attached: @calcc.py", out)
+        self.assertEqual(code, 0, out)

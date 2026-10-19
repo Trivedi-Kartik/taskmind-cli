@@ -162,6 +162,38 @@ Summaries come in your language: `tm me --language hinglish` (or `hindi`, `engli
 **Tips:** describe the result you want and what "done" looks like; for websites, list the
 sections and effects. Big or vague tasks go better [planned first](#bigger-work-plan-first).
 
+### Working on an existing project
+
+**Project notes.** Every build first reads the notes a project keeps for AI tools:
+`TASKMIND.md`, `CLAUDE.md`, `AGENTS.md`, `.cursorrules` and `.github/copilot-instructions.md`.
+If your team already uses Claude Code, Codex or Cursor, TaskMind follows the same rules with
+no setup. No notes yet? Run:
+
+```sh
+tm init          # studies the project and writes TASKMIND.md: what it is, stack, layout,
+                 # how to run and test it, conventions, what's easy to break
+```
+
+Read what it wrote, fix anything wrong, and add your own rules ("always use TypeScript",
+"never touch the payments folder"). It's saved in git, so your whole team shares it.
+
+**Point at files with @.** Name the files or folders a change is about, and the AI starts from
+exactly those:
+
+```sh
+tm build "add the same validation as @src/forms/login.ts to @src/forms/signup.ts"
+tm build "the prices in @menu.js are wrong for cold drinks; fix them"
+tm build "add a dark mode to every page in @public/"
+```
+
+A file is attached in full (a folder as its list of files). A mistyped name is caught before
+the build starts. Secret files are never attached. The build shows what it started from:
+
+```
+  📘 Project notes: TASKMIND.md, CLAUDE.md
+  📎 Starting from: src/forms/login.ts, src/forms/signup.ts
+```
+
 ## Bigger work: plan first
 
 For a large or unclear task, let TaskMind think it through before building:
@@ -253,7 +285,8 @@ shows every option.
 
 | Command | What it does |
 |---|---|
-| `tm build "..." \| <id>` | Build it ([details](#build-it-tm-build)); `--new`, `--check`, `--undo`, `--simple`, `--voice`, `-y` |
+| `tm build "..." \| <id>` | Build it ([details](#build-it-tm-build)); `@file` mentions; `--new`, `--check`, `--undo`, `--simple`, `--voice`, `-y` |
+| `tm init` | Study this project and write `TASKMIND.md`, the notes every build reads first |
 | `tm add "title"` | Write a task down (`--due friday`, `-p high`, `--remind "tomorrow 9am"`, `--no-repo`, `--voice`) |
 | `tm list` / `tm show <id>` / `tm today` | Your tasks / everything about one / what to do today (`--speak` reads it out) |
 | `tm go <id>` | Questions, code analysis, security check and steps (`--redo`, `--voice`) |
@@ -343,7 +376,7 @@ instead. `tm show <id>` lists which AI did what.
 ## Development
 
 ```sh
-python3 -m unittest discover -s tests     # 302 unit tests, no AI calls, no dependencies
+python3 -m unittest discover -s tests     # 314 unit tests, no AI calls, no dependencies
 python3 tests/live_smoke.py               # every command end to end, with your real AI provider
 python3 scripts/build.py                  # refresh the bundled guide, build dist/taskmind.pyz
 ```
